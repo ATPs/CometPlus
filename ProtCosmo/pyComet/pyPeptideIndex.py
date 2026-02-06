@@ -61,18 +61,22 @@ def generate_peptide_index_tables(
     return tables, index_run_row
 
 
-def format_field(value: Optional[object]) -> str:
+def format_field(value: Optional[object], round_floats: bool = True) -> str:
     if value is None:
         return "\\N"
     if isinstance(value, float):
-        return f"{value:.6f}"
+        if round_floats:
+            return f"{value:.6f}"
+        return str(value)
     return str(value)
 
 
-def write_tsv(path: str, rows: List[Tuple]) -> None:
+def write_tsv(path: str, rows: List[Tuple], round_floats: bool = True) -> None:
     with open(path, "w", encoding="utf-8", newline="") as handle:
         for row in rows:
-            handle.write("\t".join(format_field(value) for value in row) + "\n")
+            handle.write(
+                "\t".join(format_field(value, round_floats=round_floats) for value in row) + "\n"
+            )
 
 
 def main() -> None:
@@ -257,6 +261,7 @@ def main() -> None:
     write_tsv(
         f"{args.prefix}.peptide_variant.tsv",
         [(run_id, *row) for row in tables["peptide_variant"]],
+        round_floats=False,
     )
     write_tsv(
         f"{args.prefix}.peptide_variant_mod.tsv",

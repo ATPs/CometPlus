@@ -338,6 +338,8 @@ def build_tables(
         next_aa,
         sites_text,
         total_mods,
+        fixed_sites_text,
+        fixed_mod_count,
         mass_bin10,
         sites,
     ) in variant_task_rows:
@@ -351,6 +353,8 @@ def build_tables(
                 next_aa,
                 sites_text,
                 total_mods,
+                fixed_sites_text,
+                fixed_mod_count,
                 mass_bin10,
             )
         )
@@ -373,4 +377,3 @@ def build_tables(
 
 
 __all__ = ["build_tables"]
-

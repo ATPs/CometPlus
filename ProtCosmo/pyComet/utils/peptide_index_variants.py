@@ -13,7 +13,7 @@ HYDROGEN_MONO = 1.00782503223
 OXYGEN_MONO = 15.99491461957
 
 SequenceTask = Tuple[int, str, int, int, str, str, int, int]
-VariantTaskRow = Tuple[int, float, str, str, str, int, int, List[int]]
+VariantTaskRow = Tuple[int, float, str, str, str, int, str, int, int, List[int]]
 
 
 @dataclass(frozen=True)
@@ -244,6 +244,35 @@ def format_var_mod_sites(sites: List[int]) -> str:
     return ";".join(pairs)
 
 
+def format_fixed_mod_sites(
+    seq: str,
+    residue_mods: Dict[str, float],
+    term_mods: Dict[str, float],
+    is_protein_nterm: bool,
+    is_protein_cterm: bool,
+) -> Tuple[str, int]:
+    mod_pairs: List[Tuple[int, str]] = []
+    pep_len = len(seq)
+
+    for pos, residue in enumerate(seq):
+        delta = residue_mods.get(residue, 0.0)
+        if abs(delta) > 1e-12:
+            mod_pairs.append((pos, f"add_{residue}"))
+
+    if abs(term_mods.get("Nterm_peptide", 0.0)) > 1e-12:
+        mod_pairs.append((pep_len, "add_Nterm_peptide"))
+    if abs(term_mods.get("Nterm_protein", 0.0)) > 1e-12 and is_protein_nterm:
+        mod_pairs.append((pep_len, "add_Nterm_protein"))
+    if abs(term_mods.get("Cterm_peptide", 0.0)) > 1e-12:
+        mod_pairs.append((pep_len + 1, "add_Cterm_peptide"))
+    if abs(term_mods.get("Cterm_protein", 0.0)) > 1e-12 and is_protein_cterm:
+        mod_pairs.append((pep_len + 1, "add_Cterm_protein"))
+
+    mod_pairs.sort(key=lambda pair: (pair[0], pair[1]))
+    fixed_sites = ";".join(f"{pos}:{mod_name}" for pos, mod_name in mod_pairs)
+    return fixed_sites, len(mod_pairs)
+
+
 def compute_peptide_mass(
     seq: str,
     aa_masses: Dict[str, float],
@@ -305,6 +334,14 @@ def enumerate_sequence_variants(
     if base_mass is None:
         return []
 
+    fixed_sites_text, fixed_mod_count = format_fixed_mod_sites(
+        seq,
+        context.residue_mods,
+        context.term_mods,
+        is_protein_nterm,
+        is_protein_cterm,
+    )
+
     candidates = build_var_mod_candidates(
         seq,
         context.var_mods,
@@ -336,6 +373,8 @@ def enumerate_sequence_variants(
                 next_aa,
                 sites_text,
                 total_mods,
+                fixed_sites_text,
+                fixed_mod_count,
                 mass_bin10,
                 sites.copy(),
             )
@@ -370,10 +409,10 @@ __all__ = [
     "build_var_mod_candidates",
     "enumerate_var_mods",
     "format_var_mod_sites",
+    "format_fixed_mod_sites",
     "compute_peptide_mass",
     "resolve_thread_count",
     "enumerate_sequence_variants",
     "init_variant_worker",
     "enumerate_variant_chunk",
 ]
-

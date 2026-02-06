@@ -108,7 +108,9 @@ Each peptide sequence expanded into variable-modified variants.
    - This matches Comet’s peptide index tie-breaker, which keeps flanks from the lowest protein index when duplicates exist.
 7. `var_mod_sites`: `pos:mod_index` pairs separated by `;`. `pos` is 0-based residue index. `pos=len(seq)` is peptide N-term, `pos=len(seq)+1` is peptide C-term.
 8. `var_mod_count`: Total number of variable mods in this variant.
-9. `mass_bin10`: `int(mh_plus * 10.0)` for binning.
+9. `fixed_mod_sites`: `pos:mod_name` pairs separated by `;`. `pos` uses the same encoding as `var_mod_sites`. `mod_name` uses Comet-style static keys such as `add_C`, `add_Nterm_peptide`, `add_Cterm_peptide`, `add_Nterm_protein`, `add_Cterm_protein`.
+10. `fixed_mod_count`: Total number of fixed-mod entries in `fixed_mod_sites` for the variant.
+11. `mass_bin10`: `int(mh_plus * 10.0)` for binning.
 
 **`<prefix>.peptide_variant_mod.tsv`**
 One row per modified site in each variant.
