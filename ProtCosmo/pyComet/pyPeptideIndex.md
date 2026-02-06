@@ -5,13 +5,13 @@ This document explains how `pyPeptideIndex.py` works and describes every output 
 `pyPeptideIndex.py` builds a Comet-like peptide index from a FASTA database and a `comet.params` file. It digests protein sequences using Comet enzyme rules, enumerates variable modifications, computes peptide masses, and writes multiple TSV files (no headers). Progress is printed to stderr to help debug long runs.
 
 **How It Works (High Level)**
-1. Parse `comet.params` using `pyLoadParameters.py`, following Comet parsing rules (comments at `#`, `variable_modNN` requires 8 fields, and `[COMET_ENZYME_INFO]` is parsed at EOF).
+1. Parse `comet.params` using `utils/pyLoadParameters.py`, following Comet parsing rules (comments at `#`, `variable_modNN` requires 8 fields, and `[COMET_ENZYME_INFO]` is parsed at EOF).
 2. Determine input proteins from `--database` FASTA files, `--protein` inline sequences, or `database_name` in the params file.
 3. Normalize sequences to uppercase and keep only letters and `*`. `*` is treated as a stop and splits the protein into segments for digestion.
 4. Digest each segment using the search enzyme (and optional second enzyme) with `num_enzyme_termini`, `allowed_missed_cleavage`, and `peptide_length_range`. If `clip_nterm_methionine=1`, also generate peptides starting at position 2 when the protein starts with `M`.
 5. Record unique peptide sequences across all proteins. The "primary" protein for a peptide is the earliest occurrence (smallest FASTA file offset).
 6. Compute base peptide mass (MH+) using `mass_type_parent` (mono or average), `set_` masses, static `add_` mods, and terminal static mods.
-7. Enumerate variable mods using `variable_modNN` rules, `max_variable_mods_in_peptide`, and `require_variable_mod`. Each variant is filtered by `digest_mass_range`.
+7. Enumerate variable mods using `variable_modNN` rules, `max_variable_mods_in_peptide`, and `require_variable_mod`. Each variant is filtered by `digest_mass_range`. This step supports multiprocessing with `--thread`.
 8. Write TSV tables. Sorting is stable and reproducible (variants are sorted by mass, sequence, and mod sites).
 
 **Command Line Options**
@@ -21,6 +21,7 @@ This document explains how `pyPeptideIndex.py` works and describes every output 
 4. `--prefix` / `-N`: Output file prefix (can include a directory).
 5. `--max-record`: Maximum number of proteins to process. Default is all proteins. Intended for test/debug.
 6. `--use-protein-name`: Use the protein name from the FASTA header as `protein_id` instead of a numeric counter. The protein name is the first whitespace-delimited token in the FASTA header.
+7. `--thread`: Worker process count for variant enumeration. `1` disables multiprocessing, `0` uses all detected CPUs.
 
 **Variable Mod Enumeration Details**
 1. A `variable_modNN` entry creates a mod with 1-based index `NN` (01..15).
@@ -123,3 +124,4 @@ One row per modified site in each variant.
 4. Progress logs are printed every 1000 proteins and every 1000 sequences during variant enumeration.
 5. `X` means unknown residue. In the current implementation `X` has mass `0.0`, so any peptide containing `X` is excluded from `peptide_variant.tsv` and `peptide_variant_mod.tsv` (no calculable mass), but the sequence still appears in `peptide_sequence.tsv` and `peptide_sequence_protein.tsv`.
 6. When `--use-protein-name` is set, the protein identifier columns become strings from the FASTA header (first token). Ensure those names are unique if you rely on `protein_id` as a key.
+7. `--thread` parallelizes only the peptide-variant enumeration phase; protein digestion remains single-process.
