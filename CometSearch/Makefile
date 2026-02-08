@@ -25,7 +25,8 @@ DEPFLAGS := -MMD -MP
 OBJDIR = obj
 COMETSEARCH_SRC = Threading CometInterfaces CometSearch CometPreprocess CometPostAnalysis CometMassSpecUtils \
 					CometWriteSqt CometWritePepXML CometWriteMzIdentML CometWritePercolator CometWriteTxt CometSearchManager \
-					CombinatoricsUtils CometModificationsPermuter CometFragmentIndex CometPeptideIndex CometSpecLib CometAlignment
+					CombinatoricsUtils CometModificationsPermuter CometFragmentIndex CometPeptideIndex CometSpecLib CometAlignment \
+					CometPlusMultiDB
 
 COMETSEARCH_OBJ = $(addprefix $(OBJDIR)/, $(addsuffix .o, $(COMETSEARCH_SRC)))
 

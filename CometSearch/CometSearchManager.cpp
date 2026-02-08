@@ -30,8 +30,10 @@
 #include "CometPeptideIndex.h"
 #include "CometSpecLib.h"
 #include "CometAlignment.h"
+#include "CometPlusMultiDB.h"
 #include "AScoreOptions.h"
 #include "AScoreFactory.h"
+#include "zlib.h"
 
 
 #include <sstream>
@@ -121,12 +123,197 @@ static std::string GetHostName()
    return {};
 }
 
+static bool IsMgfGzPath(const char *pszFileName)
+{
+   if (pszFileName == NULL)
+      return false;
+
+   int iLen = (int)strlen(pszFileName);
+   if (iLen < 7)
+      return false;
+
+   return !STRCMP_IGNORE_CASE(pszFileName + iLen - 7, ".mgf.gz");
+}
+
+static std::string GetOutputDirFromBaseName(const char *pszBaseName)
+{
+   if (pszBaseName == NULL || pszBaseName[0] == '\0')
+      return ".";
+
+   std::string sBaseName = pszBaseName;
+   size_t iPos = sBaseName.find_last_of("/\\");
+   if (iPos == std::string::npos)
+      return ".";
+   else if (iPos == 0)
+      return sBaseName.substr(0, 1);
+
+   return sBaseName.substr(0, iPos);
+}
+
+static bool CreateTempMgfFromGz(const std::string& sGzPath,
+                                const std::string& sOutputDir,
+                                std::string& sTempMgfPath,
+                                std::string& sErrorMsg)
+{
+   sTempMgfPath.clear();
+   sErrorMsg.clear();
+
+   std::string sTemplatePath = sOutputDir;
+#ifdef _WIN32
+   sTemplatePath += "\\.cometplus_mgfgz_XXXXXX.mgf";
+#else
+   sTemplatePath += "/.cometplus_mgfgz_XXXXXX.mgf";
+#endif
+
+   FILE* fpCheck = fopen(sGzPath.c_str(), "rb");
+   if (fpCheck == NULL)
+   {
+      sErrorMsg = " Error - cannot open gzip spectrum input \"" + sGzPath + "\".\n";
+      return false;
+   }
+
+   unsigned char aMagic[2] = { 0, 0 };
+   size_t iMagicRead = fread(aMagic, 1, 2, fpCheck);
+   fclose(fpCheck);
+   if (iMagicRead != 2 || aMagic[0] != 0x1f || aMagic[1] != 0x8b)
+   {
+      sErrorMsg = " Error - input file \"" + sGzPath + "\" does not have a valid gzip header.\n";
+      return false;
+   }
+
+   gzFile gzInput = gzopen(sGzPath.c_str(), "rb");
+   if (gzInput == NULL)
+   {
+      sErrorMsg = " Error - cannot open gzip spectrum input \"" + sGzPath + "\".\n";
+      return false;
+   }
+
+#ifdef _WIN32
+   std::vector<char> vPathBuf(sTemplatePath.begin(), sTemplatePath.end());
+   vPathBuf.push_back('\0');
+   errno_t err = _mktemp_s(vPathBuf.data(), vPathBuf.size());
+   if (err != 0)
+   {
+      gzclose(gzInput);
+      sErrorMsg = " Error - cannot create temporary mgf path in \"" + sOutputDir + "\".\n";
+      return false;
+   }
+
+   FILE* fpOutput = fopen(vPathBuf.data(), "wb");
+   if (fpOutput == NULL)
+   {
+      gzclose(gzInput);
+      sErrorMsg = " Error - cannot write temporary mgf file \"" + std::string(vPathBuf.data()) + "\".\n";
+      return false;
+   }
+   sTempMgfPath = vPathBuf.data();
+#else
+   std::vector<char> vPathBuf(sTemplatePath.begin(), sTemplatePath.end());
+   vPathBuf.push_back('\0');
+   int iFd = mkstemps(vPathBuf.data(), 4); // keep ".mgf" suffix
+   if (iFd == -1)
+   {
+      gzclose(gzInput);
+      sErrorMsg = " Error - cannot create temporary mgf path in \"" + sOutputDir + "\".\n";
+      return false;
+   }
+
+   FILE* fpOutput = fdopen(iFd, "wb");
+   if (fpOutput == NULL)
+   {
+      close(iFd);
+      remove(vPathBuf.data());
+      gzclose(gzInput);
+      sErrorMsg = " Error - cannot write temporary mgf file \"" + std::string(vPathBuf.data()) + "\".\n";
+      return false;
+   }
+   sTempMgfPath = vPathBuf.data();
+#endif
+
+   std::vector<unsigned char> vBuffer(1 << 20);
+   while (true)
+   {
+      int iRead = gzread(gzInput, vBuffer.data(), (unsigned int)vBuffer.size());
+      if (iRead > 0)
+      {
+         size_t iWritten = fwrite(vBuffer.data(), 1, (size_t)iRead, fpOutput);
+         if (iWritten != (size_t)iRead)
+         {
+            fclose(fpOutput);
+            gzclose(gzInput);
+            remove(sTempMgfPath.c_str());
+            sTempMgfPath.clear();
+            sErrorMsg = " Error - failed writing temporary mgf file.\n";
+            return false;
+         }
+      }
+      else if (iRead == 0)
+      {
+         break;
+      }
+      else
+      {
+         int iZErr = Z_OK;
+         const char* pszZErr = gzerror(gzInput, &iZErr);
+         fclose(fpOutput);
+         gzclose(gzInput);
+         remove(sTempMgfPath.c_str());
+         sTempMgfPath.clear();
+         sErrorMsg = " Error - failed while inflating gzip input \"" + sGzPath + "\"";
+         if (pszZErr != NULL && iZErr != Z_OK)
+            sErrorMsg += ": " + std::string(pszZErr);
+         sErrorMsg += ".\n";
+         return false;
+      }
+   }
+
+   fclose(fpOutput);
+   gzclose(gzInput);
+   return true;
+}
+
+static bool GetSpectrumReadPath(const char *pszInputPath,
+                                const char *pszBaseName,
+                                std::map<std::string, std::string>& mapMgfGzTempFiles,
+                                std::vector<std::string>& vCleanupFiles,
+                                std::string& sReadPath,
+                                std::string& sErrorMsg)
+{
+   if (pszInputPath == NULL)
+   {
+      sErrorMsg = " Error - invalid null input spectrum path.\n";
+      return false;
+   }
+
+   sReadPath = pszInputPath;
+
+   if (!IsMgfGzPath(pszInputPath))
+      return true;
+
+   auto it = mapMgfGzTempFiles.find(sReadPath);
+   if (it != mapMgfGzTempFiles.end())
+   {
+      sReadPath = it->second;
+      return true;
+   }
+
+   std::string sTempMgfPath;
+   if (!CreateTempMgfFromGz(sReadPath, GetOutputDirFromBaseName(pszBaseName), sTempMgfPath, sErrorMsg))
+      return false;
+
+   mapMgfGzTempFiles[sReadPath] = sTempMgfPath;
+   vCleanupFiles.push_back(sTempMgfPath);
+   sReadPath = sTempMgfPath;
+   return true;
+}
+
 static InputType GetInputType(const char *pszFileName)
 {
    int iLen = (int)strlen(pszFileName);
 
    if (!STRCMP_IGNORE_CASE(pszFileName + iLen - 6, ".mzXML")
          || !STRCMP_IGNORE_CASE(pszFileName + iLen - 5, ".mzML")
+         || !STRCMP_IGNORE_CASE(pszFileName + iLen - 6, ".mzMLb")
          || !STRCMP_IGNORE_CASE(pszFileName + iLen - 9, ".mzXML.gz")
          || !STRCMP_IGNORE_CASE(pszFileName + iLen - 8, ".mzML.gz"))
 
@@ -142,7 +329,8 @@ static InputType GetInputType(const char *pszFileName)
    {
       return InputType_MS2;
    }
-   else if (!STRCMP_IGNORE_CASE(pszFileName + iLen - 4, ".mgf"))
+   else if (!STRCMP_IGNORE_CASE(pszFileName + iLen - 4, ".mgf")
+         || !STRCMP_IGNORE_CASE(pszFileName + iLen - 7, ".mgf.gz"))
    {
       return InputType_MGF;
    }
@@ -198,7 +386,8 @@ static bool UpdateInputFile(InputFileInfo *pFileInfo)
          *pStr = '\0';
 
       if (!STRCMP_IGNORE_CASE(g_staticParams.inputFile.szFileName + iLen - 9, ".mzXML.gz")
-            || !STRCMP_IGNORE_CASE(g_staticParams.inputFile.szFileName + iLen - 8, ".mzML.gz"))
+            || !STRCMP_IGNORE_CASE(g_staticParams.inputFile.szFileName + iLen - 8, ".mzML.gz")
+            || !STRCMP_IGNORE_CASE(g_staticParams.inputFile.szFileName + iLen - 7, ".mgf.gz"))
       {
          if ( (pStr = strrchr(g_staticParams.inputFile.szBaseName, '.')))
             *pStr = '\0';
@@ -381,6 +570,36 @@ static bool ValidateSequenceDatabaseFile()
 {
    FILE *fpcheck;
 
+   if (g_bCometPlusMultiIdxMode && g_vCometPlusDatabaseList.size() > 1)
+   {
+      g_bIdxNoFasta = true;
+      g_staticParams.options.bCreateFragmentIndex = false;
+
+      for (size_t i = 0; i < g_vCometPlusDatabaseList.size(); ++i)
+      {
+         const string& sDbPath = g_vCometPlusDatabaseList.at(i);
+         if (sDbPath.length() < 4 || STRCMP_IGNORE_CASE(sDbPath.c_str() + sDbPath.length() - 4, ".idx"))
+         {
+            string strErrorMsg = " Error - multi-idx mode requires .idx database entries. Invalid entry: \""
+               + sDbPath + "\".\n";
+            g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
+            logerr(strErrorMsg);
+            return false;
+         }
+
+         if ((fpcheck = fopen(sDbPath.c_str(), "r")) == NULL)
+         {
+            string strErrorMsg = " Error - cannot read index database file \"" + sDbPath + "\".\n";
+            g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
+            logerr(strErrorMsg);
+            return false;
+         }
+         fclose(fpcheck);
+      }
+
+      return true;
+   }
+
    // open FASTA for retrieving protein names
    string sTmpDB = g_staticParams.databaseInfo.szDatabase;
 
@@ -530,6 +749,8 @@ CometSearchManager::CometSearchManager() :
    staticParamsInitializationComplete(false),
    singleSearchThreadCount(1)
 {
+   CometPlusResetMultiDBState();
+
    // Initialize the mutexes we'll use to protect global data.
    Threading::CreateMutex(&g_pvQueryMutex);
 
@@ -549,6 +770,8 @@ CometSearchManager::CometSearchManager() :
 
 CometSearchManager::~CometSearchManager()
 {
+   CometPlusResetMultiDBState();
+
    // Destroy the mutex we used to protect g_pvQuery.
    Threading::DestroyMutex(g_pvQueryMutex);
 
@@ -582,8 +805,33 @@ bool CometSearchManager::InitializeStaticParams()
    if (staticParamsInitializationComplete)
       return true;
 
+   CometPlusResetMultiDBState();
+
    if (GetParamValue("database_name", strData))
       strcpy(g_staticParams.databaseInfo.szDatabase, strData.c_str());
+
+   if (GetParamValue("database_name_list", strData))
+      g_vCometPlusDatabaseList = CometPlusSplitDatabaseList(strData);
+
+   string sCometPlusMode;
+   if (GetParamValue("cometplus_multi_db_mode", sCometPlusMode))
+   {
+      g_bCometPlusMultiDbMode = (sCometPlusMode == "multi_fasta" || sCometPlusMode == "multi_idx");
+      g_bCometPlusMultiIdxMode = (sCometPlusMode == "multi_idx");
+   }
+
+   if (!g_vCometPlusDatabaseList.empty())
+   {
+      g_bCometPlusMultiDbMode = (g_vCometPlusDatabaseList.size() > 1);
+
+      if (g_bCometPlusMultiIdxMode)
+      {
+         strcpy(g_staticParams.databaseInfo.szDatabase, g_vCometPlusDatabaseList.at(0).c_str());
+      }
+   }
+
+   if (g_vCometPlusDatabaseList.size() <= 1)
+      g_bCometPlusMultiIdxMode = false;
 
    if (GetParamValue("decoy_prefix", strData))
    {
@@ -1673,16 +1921,42 @@ bool CometSearchManager::InitializeStaticParams()
    g_massRange.uiMaxFragmentArrayIndex = BIN(g_staticParams.options.dFragIndexMaxMass) + 1;
 
    // At this point, check extension to set whether index database or not
-   if (!strcmp(g_staticParams.databaseInfo.szDatabase + strlen(g_staticParams.databaseInfo.szDatabase) - 4, ".idx"))
+   if (g_bCometPlusMultiIdxMode && g_vCometPlusDatabaseList.size() > 1)
    {
-      // Has .idx extension.  Now parse first line ot see if peptide index or fragment index.
+      string sErrorMsg;
+      if (!CometPlusInitializeMultiIdxContexts(g_vCometPlusDatabaseList, 0, sErrorMsg))
+      {
+         g_cometStatus.SetStatus(CometResult_Failed, sErrorMsg);
+         logerr(sErrorMsg);
+         return false;
+      }
+
+      if (g_vCometPlusIdxContexts.empty())
+      {
+         string strErrorMsg = " Error - multi-idx mode requested but no index files were provided.\n";
+         g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
+         logerr(strErrorMsg);
+         return false;
+      }
+
+      g_staticParams.iIndexDb = g_vCometPlusIdxContexts.at(0).iIndexDbType;
+      if (g_staticParams.iIndexDb == 1
+         && (g_staticParams.options.iSpectrumBatchSize > FRAGINDEX_MAX_BATCHSIZE
+            || g_staticParams.options.iSpectrumBatchSize == 0))
+      {
+         g_staticParams.options.iSpectrumBatchSize = FRAGINDEX_MAX_BATCHSIZE;
+      }
+   }
+   else if (!strcmp(g_staticParams.databaseInfo.szDatabase + strlen(g_staticParams.databaseInfo.szDatabase) - 4, ".idx"))
+   {
+      // Has .idx extension.  Now parse first line to see if peptide index or fragment index.
       // either "Comet peptide index" or "Comet fragment ion index"
       char szTmp[512];
       FILE *fp;
 
       // If .idx specified but does not exist, Comet will generate a fragment ion index
       // for the search.
-      if ( (fp=fopen(g_staticParams.databaseInfo.szDatabase, "r")) == NULL)
+      if ((fp = fopen(g_staticParams.databaseInfo.szDatabase, "r")) == NULL)
       {
          g_staticParams.iIndexDb = 1;  // fragment ion index
          if (g_staticParams.options.iSpectrumBatchSize > FRAGINDEX_MAX_BATCHSIZE || g_staticParams.options.iSpectrumBatchSize == 0)
@@ -1705,7 +1979,7 @@ bool CometSearchManager::InitializeStaticParams()
          }
          else if (!strncmp(szTmp, "Comet fragment ion index", 24))
          {
-             g_staticParams.iIndexDb = 1;  // fragment ion index
+            g_staticParams.iIndexDb = 1;  // fragment ion index
 
             // if searching fragment index database, limit load of query spectra as no
             // need to load all spectra into memory since querying spectra sequentially
@@ -2121,6 +2395,16 @@ bool CometSearchManager::DoSearch()
    if (!ValidateOutputFormat())
       return false;
 
+   if (g_bCometPlusMultiIdxMode
+      && g_vCometPlusDatabaseList.size() > 1
+      && g_staticParams.options.iOutputMzIdentMLFile)
+   {
+      string strErrorMsg = " Error - output_mzidentmlfile is not supported in multi-idx mode.\n";
+      g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
+      logerr(strErrorMsg);
+      return false;
+   }
+
    if (strlen(g_staticParams.databaseInfo.szDatabase) == 0 || !ValidateSequenceDatabaseFile())
       g_bPerformDatabaseSearch = false;
    else
@@ -2141,6 +2425,25 @@ bool CometSearchManager::DoSearch()
       return false;
 
    bool bSucceeded = true;
+
+   std::vector<std::string> vTempMgfFilesToCleanup;
+   std::map<std::string, std::string> mapMgfGzTempFiles;
+   struct TempMgfCleanupScope
+   {
+      explicit TempMgfCleanupScope(std::vector<std::string>& vFiles)
+         : _vFiles(vFiles)
+      {
+      }
+
+      ~TempMgfCleanupScope()
+      {
+         for (auto it = _vFiles.begin(); it != _vFiles.end(); ++it)
+            remove((*it).c_str());
+      }
+
+      std::vector<std::string>& _vFiles;
+   };
+   TempMgfCleanupScope tempMgfCleanupScope(vTempMgfFilesToCleanup);
 
 #ifdef PERF_DEBUG
    // print set search parameters
@@ -2257,7 +2560,43 @@ bool CometSearchManager::DoSearch()
 
             CometPreprocess::Reset();
 
+            std::string sSpectrumReadPath;
+            std::string sTempErrorMsg;
+            bSucceeded = GetSpectrumReadPath(g_staticParams.inputFile.szFileName,
+                                             g_staticParams.inputFile.szBaseName,
+                                             mapMgfGzTempFiles,
+                                             vTempMgfFilesToCleanup,
+                                             sSpectrumReadPath,
+                                             sTempErrorMsg);
+            if (!bSucceeded)
+            {
+               g_cometStatus.SetStatus(CometResult_Failed, sTempErrorMsg);
+               logerr(sTempErrorMsg);
+               break;
+            }
+
+            char szOriginalSpectrumPath[SIZE_FILE];
+            bool bOverrideReadPath = false;
+            if (sSpectrumReadPath != g_staticParams.inputFile.szFileName)
+            {
+               if (sSpectrumReadPath.size() >= SIZE_FILE)
+               {
+                  string strErrorMsg = " Error - temporary mgf path exceeds internal path size limit.\n";
+                  g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
+                  logerr(strErrorMsg);
+                  bSucceeded = false;
+                  break;
+               }
+
+               strcpy(szOriginalSpectrumPath, g_staticParams.inputFile.szFileName);
+               strcpy(g_staticParams.inputFile.szFileName, sSpectrumReadPath.c_str());
+               bOverrideReadPath = true;
+            }
+
             bSucceeded = CometPreprocess::ReadPrecursors(mstReader);
+
+            if (bOverrideReadPath)
+               strcpy(g_staticParams.inputFile.szFileName, szOriginalSpectrumPath);
          }
 
          if (!g_staticParams.options.bOutputSqtStream)
@@ -2282,6 +2621,21 @@ bool CometSearchManager::DoSearch()
       bSucceeded = UpdateInputFile(g_pvInputFiles.at(i));
       if (!bSucceeded)
          break;
+
+      std::string sSpectrumReadPath;
+      std::string sTempErrorMsg;
+      bSucceeded = GetSpectrumReadPath(g_staticParams.inputFile.szFileName,
+                                       g_staticParams.inputFile.szBaseName,
+                                       mapMgfGzTempFiles,
+                                       vTempMgfFilesToCleanup,
+                                       sSpectrumReadPath,
+                                       sTempErrorMsg);
+      if (!bSucceeded)
+      {
+         g_cometStatus.SetStatus(CometResult_Failed, sTempErrorMsg);
+         logerr(sTempErrorMsg);
+         break;
+      }
 
       time_t tStartTime;
       time(&tStartTime);
@@ -2652,21 +3006,29 @@ bool CometSearchManager::DoSearch()
 
             if (g_staticParams.iIndexDb > 0)
             {
-               // .idx db so first open .idx file
-               if ((fpidx = fopen(sTmpDB.c_str(), "r")) == NULL)
+               if (!g_bCometPlusMultiIdxMode)
                {
-                  string strErrorMsg = " Error (1a) - cannot read .idx file \"" + sTmpDB + "\".\n";
-                  g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
-                  logerr(strErrorMsg);
-                  return false;
-               }
+                  // .idx db so first open .idx file
+                  if ((fpidx = fopen(sTmpDB.c_str(), "r")) == NULL)
+                  {
+                     string strErrorMsg = " Error (1a) - cannot read .idx file \"" + sTmpDB + "\".\n";
+                     g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
+                     logerr(strErrorMsg);
+                     return false;
+                  }
 
-               // .idx db so next check if FASTA is present (not required)
-               sTmpDB = sTmpDB.erase(sTmpDB.size() - 4); // need plain fasta if indexdb input
-               if ((fpfasta = fopen(sTmpDB.c_str(), "r")) == NULL)
+                  // .idx db so next check if FASTA is present (not required)
+                  sTmpDB = sTmpDB.erase(sTmpDB.size() - 4); // need plain fasta if indexdb input
+                  if ((fpfasta = fopen(sTmpDB.c_str(), "r")) == NULL)
+                  {
+                     g_bIdxNoFasta = true;
+                     fpfasta = NULL;
+                  }
+               }
+               else
                {
-                  g_bIdxNoFasta = true;
-                  fpfasta = NULL;
+                  fpidx = NULL;   // each idx file is opened on-demand by multi-idx readers
+                  fpfasta = NULL; // mzid output is blocked for multi-idx mode
                }
             }
             else
@@ -2784,7 +3146,28 @@ bool CometSearchManager::DoSearch()
             // spectra, we MUST "goto cleanup_results" before exiting the loop,
             // or we will create a memory leak!
 
+            char szOriginalSpectrumPath[SIZE_FILE];
+            bool bOverrideReadPath = false;
+            if (sSpectrumReadPath != g_staticParams.inputFile.szFileName)
+            {
+               if (sSpectrumReadPath.size() >= SIZE_FILE)
+               {
+                  string strErrorMsg = " Error - temporary mgf path exceeds internal path size limit.\n";
+                  g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
+                  logerr(strErrorMsg);
+                  bSucceeded = false;
+                  goto cleanup_results;
+               }
+
+               strcpy(szOriginalSpectrumPath, g_staticParams.inputFile.szFileName);
+               strcpy(g_staticParams.inputFile.szFileName, sSpectrumReadPath.c_str());
+               bOverrideReadPath = true;
+            }
+
             bSucceeded = CometPreprocess::LoadAndPreprocessSpectra(mstReader, iFirstScan, iLastScan, iAnalysisType, tp);
+
+            if (bOverrideReadPath)
+               strcpy(g_staticParams.inputFile.szFileName, szOriginalSpectrumPath);
 
             if (!bSucceeded)
                goto cleanup_results;
@@ -3393,6 +3776,7 @@ bool CometSearchManager::DoSingleSpectrumSearchMultiResults(const int topN,
    int iSize;
    int takeSearchResultsN;
    ThreadPool* tp = _tp;  // filled in InitializeSingleSpectrumSearch
+   FILE* fp = NULL;
 
    if (!bSucceeded)
       goto cleanup_results;
@@ -3461,15 +3845,17 @@ bool CometSearchManager::DoSingleSpectrumSearchMultiResults(const int topN,
    if (!bSucceeded)
       goto cleanup_results;
 
-   // Open .idx file for retrieving protein names
-   FILE* fp;
-   if ((fp = fopen(g_staticParams.databaseInfo.szDatabase, "rb")) == NULL)
+   // Open .idx file for retrieving protein names (single-db index mode only).
+   if (!g_bCometPlusMultiIdxMode)
    {
-      string strErrorMsg = " Error - cannot read indexed database file \"" + std::string(g_staticParams.databaseInfo.szDatabase)
-         + "\" " + std::strerror(errno) + "\n.";
-      g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
-      logerr(strErrorMsg);
-      return false;
+      if ((fp = fopen(g_staticParams.databaseInfo.szDatabase, "rb")) == NULL)
+      {
+         string strErrorMsg = " Error - cannot read indexed database file \"" + std::string(g_staticParams.databaseInfo.szDatabase)
+            + "\" " + std::strerror(errno) + "\n.";
+         g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
+         logerr(strErrorMsg);
+         return false;
+      }
    }
 
    for (int iWhichResult = 0; iWhichResult < takeSearchResultsN; ++iWhichResult)

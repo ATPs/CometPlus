@@ -1,5 +1,7 @@
 create libmstoolkit.a
 addlib obj/libmst.a
 addlib obj/libmzparser.a
+addlib /data/p/hdf5/hdf5-1.14.4-3_build_native_cpp/lib/libhdf5.a
+addlib /data/p/hdf5/hdf5-1.14.4-3_build_native_cpp/lib/libhdf5_cpp.a
 save
 end

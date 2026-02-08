@@ -14,6 +14,7 @@
 
 #include "Common.h"
 #include "CometSearch.h"
+#include "CometPlusMultiDB.h"
 
 
 #define BINARYSEARCHCUTOFF 20                // do linear search through FI if # entries is this or less
@@ -1663,8 +1664,338 @@ void CometSearch::SearchFragmentIndex(size_t iWhichQuery,
 }
 
 
+bool CometSearch::SearchPeptideIndexMulti(ThreadPool* tp)
+{
+   (void)tp;
+
+   if (g_vCometPlusIdxContexts.empty())
+   {
+      string strErrorMsg = " Error - multi-idx peptide search requested with no index contexts.\n";
+      g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
+      logerr(strErrorMsg);
+      return false;
+   }
+
+   if (!g_bPeptideIndexRead)
+   {
+      FILE* fpHeader = fopen(g_vCometPlusIdxContexts.at(0).sPath.c_str(), "rb");
+      if (fpHeader == NULL)
+      {
+         string strErrorMsg = " Error - cannot read indexed database file \"" + g_vCometPlusIdxContexts.at(0).sPath
+            + "\" " + std::strerror(errno) + "\n.";
+         g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
+         logerr(strErrorMsg);
+         return false;
+      }
+
+      // Ignore any static masses in params file; only valid ones are those in database index.
+      memset(g_staticParams.staticModifications.pdStaticMods, 0, sizeof(g_staticParams.staticModifications.pdStaticMods));
+
+      bool bFoundStatic = false;
+      bool bFoundVariable = false;
+      char szBuf[SIZE_BUF];
+
+      while (fgets(szBuf, SIZE_BUF, fpHeader))
+      {
+         if (!strncmp(szBuf, "MassType:", 9))
+         {
+            sscanf(szBuf + 10, "%d %d", &g_staticParams.massUtility.bMonoMassesParent, &g_staticParams.massUtility.bMonoMassesFragment);
+         }
+         else if (!strncmp(szBuf, "StaticMod:", 10))
+         {
+            char* tok;
+            char delims[] = " ";
+            int x = 65;
+
+            // Reset masses before applying static mods from index header.
+            CometMassSpecUtils::AssignMass(g_staticParams.massUtility.pdAAMassFragment,
+               g_staticParams.massUtility.bMonoMassesFragment,
+               &g_staticParams.massUtility.dOH2fragment);
+
+            bFoundStatic = true;
+            tok = strtok(szBuf + 11, delims);
+            while (tok != NULL)
+            {
+               sscanf(tok, "%lf", &(g_staticParams.staticModifications.pdStaticMods[x]));
+               g_staticParams.massUtility.pdAAMassFragment[x] += g_staticParams.staticModifications.pdStaticMods[x];
+               g_staticParams.massUtility.pdAAMassParent[x] += g_staticParams.staticModifications.pdStaticMods[x];
+               tok = strtok(NULL, delims);
+               x++;
+               if (x == 95)  // 65-90 stores A-Z then next 4 (ascii 91-94) are n/c term peptide, n/c term protein
+                  break;
+            }
+
+            g_staticParams.staticModifications.dAddNterminusPeptide = g_staticParams.staticModifications.pdStaticMods[91];
+            g_staticParams.staticModifications.dAddCterminusPeptide = g_staticParams.staticModifications.pdStaticMods[92];
+            g_staticParams.staticModifications.dAddNterminusProtein = g_staticParams.staticModifications.pdStaticMods[93];
+            g_staticParams.staticModifications.dAddCterminusProtein = g_staticParams.staticModifications.pdStaticMods[94];
+
+            g_staticParams.precalcMasses.dNtermProton = g_staticParams.staticModifications.dAddNterminusPeptide + PROTON_MASS;
+            g_staticParams.precalcMasses.dCtermOH2Proton = g_staticParams.staticModifications.dAddCterminusPeptide
+               + g_staticParams.massUtility.dOH2fragment + PROTON_MASS;
+            g_staticParams.precalcMasses.dOH2ProtonCtermNterm = g_staticParams.massUtility.dOH2parent
+               + PROTON_MASS
+               + g_staticParams.staticModifications.dAddCterminusPeptide
+               + g_staticParams.staticModifications.dAddNterminusPeptide;
+         }
+         else if (!strncmp(szBuf, "Enzyme:", 7))
+         {
+            sscanf(szBuf, "Enzyme: %s [%d %s %s]", g_staticParams.enzymeInformation.szSearchEnzymeName,
+               &(g_staticParams.enzymeInformation.iSearchEnzymeOffSet),
+               g_staticParams.enzymeInformation.szSearchEnzymeBreakAA,
+               g_staticParams.enzymeInformation.szSearchEnzymeNoBreakAA);
+         }
+         else if (!strncmp(szBuf, "Enzyme2:", 8))
+         {
+            sscanf(szBuf, "Enzyme2: %s [%d %s %s]", g_staticParams.enzymeInformation.szSearchEnzyme2Name,
+               &(g_staticParams.enzymeInformation.iSearchEnzyme2OffSet),
+               g_staticParams.enzymeInformation.szSearchEnzyme2BreakAA,
+               g_staticParams.enzymeInformation.szSearchEnzyme2NoBreakAA);
+         }
+         else if (!strncmp(szBuf, "VariableMod:", 12))
+         {
+            string strMods = szBuf + 13;
+            istringstream iss(strMods);
+            int iNumMods = 0;
+            bFoundVariable = true;
+
+            do
+            {
+               string subStr;
+
+               iss >> subStr; // parse each word which is a colon delimited quad
+               std::replace(subStr.begin(), subStr.end(), ':', ' ');
+               int iRet = sscanf(subStr.c_str(), "%s %lf %lf %lf",
+                  g_staticParams.variableModParameters.varModList[iNumMods].szVarModChar,
+                  &(g_staticParams.variableModParameters.varModList[iNumMods].dVarModMass),
+                  &(g_staticParams.variableModParameters.varModList[iNumMods].dNeutralLoss),
+                  &(g_staticParams.variableModParameters.varModList[iNumMods].dNeutralLoss2));
+
+               if (iRet != 4)
+               {
+                  string strErrorMsg = " Error parsing mod entry: " + subStr + ".\n";
+                  logerr(strErrorMsg);
+                  std::fclose(fpHeader);
+                  return false;
+               }
+
+               if (g_staticParams.variableModParameters.varModList[iNumMods].dNeutralLoss != 0.0)
+                  g_staticParams.variableModParameters.bUseFragmentNeutralLoss = true;
+
+               iNumMods++;
+               if (iNumMods == VMODS)
+                  break;
+            } while (iss);
+
+            break;
+         }
+      }
+
+      std::fclose(fpHeader);
+
+      if (!(bFoundStatic && bFoundVariable))
+      {
+         string strErrorMsg = " Error with index database format. Mods not parsed ("
+            + std::to_string(bFoundStatic) + " " + std::to_string(bFoundVariable) + ".\n";
+         logerr(strErrorMsg);
+         return false;
+      }
+
+      // Peptide index searches always set this to true.
+      g_staticParams.variableModParameters.bVarModSearch = true;
+
+      if (g_staticParams.options.iPrintAScoreProScore)
+      {
+         if (g_bCometPlusMultiIdxMode)
+         {
+            logout(" Warning - disabling AScorePro localization for multi-idx peptide search.\n");
+            g_staticParams.options.iPrintAScoreProScore = 0;
+         }
+         else
+         {
+            static CometSearchManager g_cometSearchManager;
+            g_cometSearchManager.SetAScoreOptions(g_AScoreOptions);
+
+            g_AScoreInterface = CreateAScoreDllInterface();
+            if (!g_AScoreInterface)
+            {
+               std::cerr << "Failed to create AScore interface." << std::endl;
+               exit(1);
+            }
+         }
+      }
+
+      // For the first RTS query, set clock start now to skip time reading index.
+      g_staticParams.tRealTimeStart = std::chrono::high_resolution_clock::now();
+      g_bPeptideIndexRead = true;
+   }
+
+   for (size_t iCtx = 0; iCtx < g_vCometPlusIdxContexts.size(); ++iCtx)
+   {
+      CometPlusIdxContext& ctx = g_vCometPlusIdxContexts.at(iCtx);
+      FILE* fp = fopen(ctx.sPath.c_str(), "rb");
+      if (fp == NULL)
+      {
+         string strErrorMsg = " Error - cannot read indexed database file \"" + ctx.sPath
+            + "\" " + std::strerror(errno) + "\n.";
+         g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
+         logerr(strErrorMsg);
+         return false;
+      }
+
+      comet_fileoffset_t lEndOfStruct = 0;
+      comet_fileoffset_t clProteinsFilePos = 0;
+      size_t tTmp = 0;
+
+      comet_fseek(fp, -clSizeCometFileOffset * 2, SEEK_END);
+      tTmp = fread(&lEndOfStruct, clSizeCometFileOffset, 1, fp);
+      tTmp = fread(&clProteinsFilePos, clSizeCometFileOffset, 1, fp);
+      (void)tTmp;
+
+      string sErrorMsg;
+      if (!CometPlusReadProteinSetsForContext(fp, clProteinsFilePos, ctx, sErrorMsg))
+      {
+         fclose(fp);
+         g_cometStatus.SetStatus(CometResult_Failed, sErrorMsg);
+         logerr(sErrorMsg);
+         return false;
+      }
+
+      int iMinMass = 0;
+      int iMaxMass = 0;
+      uint64_t tNumPeptides = 0;
+
+      comet_fseek(fp, lEndOfStruct, SEEK_SET);
+      tTmp = fread(&iMinMass, sizeof(int), 1, fp);
+      tTmp = fread(&iMaxMass, sizeof(int), 1, fp);
+      tTmp = fread(&tNumPeptides, sizeof(uint64_t), 1, fp);
+      (void)tTmp;
+
+      if (iMinMass < 0 || iMinMass > 20000 || iMaxMass < 0 || iMaxMass > 20000)
+      {
+         string strErrorMsg = " Error reading .idx database:  min mass " + std::to_string(iMinMass)
+            + ", max mass " + std::to_string(iMaxMass) + ", num peptides " + std::to_string(tNumPeptides)
+            + " in \"" + ctx.sPath + "\".\n";
+         logerr(strErrorMsg);
+         std::fclose(fp);
+         return false;
+      }
+
+      int iMaxPeptideMass10 = iMaxMass * 10;
+      comet_fileoffset_t* lReadIndex = new comet_fileoffset_t[iMaxPeptideMass10];
+      for (int i = 0; i < iMaxPeptideMass10; ++i)
+         lReadIndex[i] = -1;
+
+      tTmp = fread(lReadIndex, sizeof(comet_fileoffset_t), iMaxPeptideMass10, fp);
+      (void)tTmp;
+
+      int iStart = (int)(g_massRange.dMinMass - 0.5);
+      int iEnd = (int)(g_massRange.dMaxMass + 0.5);
+
+      if (iStart > iMaxMass)
+      {
+         delete[] lReadIndex;
+         std::fclose(fp);
+         continue;
+      }
+
+      if (iStart < iMinMass)
+         iStart = iMinMass;
+      if (iEnd > iMaxMass)
+         iEnd = iMaxMass;
+
+      int iStart10 = (int)(g_massRange.dMinMass * 10.0 - 0.5);
+      int iEnd10 = (int)(g_massRange.dMaxMass * 10.0 + 0.5);
+
+      if (iStart10 < iMinMass * 10)
+         iStart10 = iMinMass * 10;
+      if (iEnd10 > iMaxMass * 10)
+         iEnd10 = iMaxMass * 10;
+
+      while (lReadIndex[iStart10] == -1 && iStart10 < iEnd10)
+         iStart10++;
+
+      if (lReadIndex[iStart10] == -1)
+      {
+         delete[] lReadIndex;
+         std::fclose(fp);
+         continue;
+      }
+
+      struct DBIndex sDBI;
+      sDBEntry dbe;
+
+      comet_fseek(fp, lReadIndex[iStart10], SEEK_SET);
+      CometPeptideIndex::ReadPeptideIndexEntry(&sDBI, fp);
+
+      if (sDBI.lIndexProteinFilePosition < 0
+         || (size_t)sDBI.lIndexProteinFilePosition >= ctx.vLocalProteinSetToGlobalSet.size())
+      {
+         string strErrorMsg = " Error - invalid protein set reference in \"" + ctx.sPath + "\".\n";
+         delete[] lReadIndex;
+         std::fclose(fp);
+         logerr(strErrorMsg);
+         return false;
+      }
+
+      dbe.lProteinFilePosition = ctx.vLocalProteinSetToGlobalSet[(size_t)sDBI.lIndexProteinFilePosition];
+
+      while ((int)(sDBI.dPepMass * 10) <= iEnd10)
+      {
+         if (sDBI.dPepMass > g_massRange.dMaxMass)
+            break;
+
+         int iWhichQuery = BinarySearchMass(0, (int)g_pvQuery.size(), sDBI.dPepMass);
+         while (iWhichQuery > 0 && g_pvQuery.at(iWhichQuery)->_pepMassInfo.dPeptideMassTolerancePlus >= sDBI.dPepMass)
+            iWhichQuery--;
+
+         if (iWhichQuery != -1)
+         {
+            AnalyzePeptideIndex(iWhichQuery, sDBI, _ppbDuplFragmentArr[0], &dbe);
+         }
+
+         if (comet_ftell(fp) >= lEndOfStruct || sDBI.dPepMass > g_massRange.dMaxMass)
+            break;
+
+         CometPeptideIndex::ReadPeptideIndexEntry(&sDBI, fp);
+
+         if (sDBI.lIndexProteinFilePosition < 0
+            || (size_t)sDBI.lIndexProteinFilePosition >= ctx.vLocalProteinSetToGlobalSet.size())
+         {
+            string strErrorMsg = " Error - invalid protein set reference in \"" + ctx.sPath + "\".\n";
+            delete[] lReadIndex;
+            std::fclose(fp);
+            logerr(strErrorMsg);
+            return false;
+         }
+
+         dbe.lProteinFilePosition = ctx.vLocalProteinSetToGlobalSet[(size_t)sDBI.lIndexProteinFilePosition];
+
+         if (feof(fp))
+            break;
+
+         if (g_staticParams.options.iMaxIndexRunTime > 0)
+         {
+            std::chrono::high_resolution_clock::time_point tNow = std::chrono::high_resolution_clock::now();
+            auto tElapsedTime = std::chrono::duration_cast<chrono::milliseconds>(tNow - g_staticParams.tRealTimeStart).count();
+            if (tElapsedTime >= g_staticParams.options.iMaxIndexRunTime)
+               break;
+         }
+      }
+
+      delete[] lReadIndex;
+      std::fclose(fp);
+   }
+
+   return true;
+}
+
+
 bool CometSearch::SearchPeptideIndex(ThreadPool* tp)
 {
+   if (g_bCometPlusMultiIdxMode && g_vCometPlusIdxContexts.size() > 1)
+      return SearchPeptideIndexMulti(tp);
+
    comet_fileoffset_t lEndOfStruct;
    char szBuf[SIZE_BUF];
    FILE *fp;
@@ -5222,10 +5553,30 @@ int CometSearch::CheckDuplicate(int iWhichQuery,
 
                pQuery->_pDecoys[i].pWhichDecoyProtein.push_back(pTmp);
 
-               // if duplicate, check to see if need to replace stored protein info 
-               // with protein that's earlier in database
-               if (pQuery->_pDecoys[i].lProteinFilePosition > dbe->lProteinFilePosition)
-               {     
+               // If duplicate, update protein set reference and keep deterministic
+               // flanking residues from the earliest protein ordinal.
+               if (g_bCometPlusMultiIdxMode && g_staticParams.iIndexDb)
+               {
+                  comet_fileoffset_t lStoredSet = pQuery->_pDecoys[i].lProteinFilePosition;
+                  comet_fileoffset_t lIncomingSet = dbe->lProteinFilePosition;
+                  int iFirstStored = INT_MAX;
+                  int iFirstIncoming = INT_MAX;
+
+                  CometPlusGetFirstProteinIdInSet(lStoredSet, iFirstStored);
+                  CometPlusGetFirstProteinIdInSet(lIncomingSet, iFirstIncoming);
+
+                  int iMergedSet = CometPlusMergeProteinSetIndices(lStoredSet, lIncomingSet);
+                  pQuery->_pDecoys[i].lProteinFilePosition = iMergedSet;
+                  dbe->lProteinFilePosition = iMergedSet;
+
+                  if (iFirstIncoming < iFirstStored)
+                  {
+                     memcpy(pQuery->_pDecoys[i].szPeptide, szProteinSeq + iStartPos, (pQuery->_pDecoys[i].usiLenPeptide * sizeof(char)));
+                     pQuery->_pDecoys[i].szPeptide[pQuery->_pDecoys[i].usiLenPeptide] = '\0';
+                  }
+               }
+               else if (pQuery->_pDecoys[i].lProteinFilePosition > dbe->lProteinFilePosition)
+               {
                   pQuery->_pDecoys[i].lProteinFilePosition = dbe->lProteinFilePosition;
 
                   // also if IL equivalence set, go ahead and copy peptide from first sequence
@@ -5353,10 +5704,32 @@ int CometSearch::CheckDuplicate(int iWhichQuery,
                // with protein that's earlier in database
                if (bFirstTargetPep || (bDecoyPep && pQuery->_pResults[i].pWhichProtein.size() == 0) || !bDecoyPep)
                {
-                  if (bFirstTargetPep || pQuery->_pResults[i].lProteinFilePosition > dbe->lProteinFilePosition)
+                  bool bReplaceStoredProtein = false;
+
+                  if (g_bCometPlusMultiIdxMode && g_staticParams.iIndexDb)
+                  {
+                     comet_fileoffset_t lStoredSet = pQuery->_pResults[i].lProteinFilePosition;
+                     comet_fileoffset_t lIncomingSet = dbe->lProteinFilePosition;
+                     int iFirstStored = INT_MAX;
+                     int iFirstIncoming = INT_MAX;
+
+                     CometPlusGetFirstProteinIdInSet(lStoredSet, iFirstStored);
+                     CometPlusGetFirstProteinIdInSet(lIncomingSet, iFirstIncoming);
+
+                     int iMergedSet = CometPlusMergeProteinSetIndices(lStoredSet, lIncomingSet);
+                     pQuery->_pResults[i].lProteinFilePosition = iMergedSet;
+                     dbe->lProteinFilePosition = iMergedSet;
+
+                     bReplaceStoredProtein = bFirstTargetPep || (iFirstIncoming < iFirstStored);
+                  }
+                  else if (bFirstTargetPep || pQuery->_pResults[i].lProteinFilePosition > dbe->lProteinFilePosition)
                   {
                      pQuery->_pResults[i].lProteinFilePosition = dbe->lProteinFilePosition;
+                     bReplaceStoredProtein = true;
+                  }
 
+                  if (bReplaceStoredProtein)
+                  {
                      // also if IL equivalence set, go ahead and copy peptide from first sequence
                      memcpy(pQuery->_pResults[i].szPeptide, szProteinSeq + iStartPos, pQuery->_pResults[i].usiLenPeptide * sizeof(char));
                      pQuery->_pResults[i].szPeptide[pQuery->_pResults[i].usiLenPeptide] = '\0';

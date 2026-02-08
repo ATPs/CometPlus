@@ -252,6 +252,7 @@ private:
    static void SearchFragmentIndex(size_t iWhichQuery,
                                    ThreadPool* tp);
    bool SearchPeptideIndex(ThreadPool* tp);
+   bool SearchPeptideIndexMulti(ThreadPool* tp);
    void AnalyzePeptideIndex(int iWhichQuery,
                             DBIndex sDBI,
                             bool *pbDuplFragment,

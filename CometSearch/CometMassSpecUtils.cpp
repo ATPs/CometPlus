@@ -22,6 +22,7 @@
 #include "CometSearchManager.h"
 #include "CometMassSpecUtils.h"
 #include "CometSearch.h"
+#include "CometPlusMultiDB.h"
 #include <inttypes.h>
 
 int iRet;
@@ -204,6 +205,48 @@ void CometMassSpecUtils::GetProteinNameString(FILE *fpdb,
          pOutput = g_pvQuery.at(iWhichQuery)->_pResults;
       else
          pOutput = g_pvQuery.at(iWhichQuery)->_pDecoys;
+
+      if (g_bCometPlusMultiIdxMode)
+      {
+         vector<int> vProteinIds;
+         if (!CometPlusGetProteinSet(pOutput[iWhichResult].lProteinFilePosition, vProteinIds))
+         {
+            *uiNumTotProteins = 0;
+            return;
+         }
+
+         *uiNumTotProteins = (unsigned int)vProteinIds.size();
+
+         int iPrintDuplicateProteinCt = 0;
+         vector<string> vTmpDecoys;
+         for (auto itId = vProteinIds.begin(); itId != vProteinIds.end(); ++itId)
+         {
+            string sProteinName;
+            if (!CometPlusGetProteinNameById(*itId, sProteinName))
+               continue;
+
+            if (!strncmp(sProteinName.c_str(), g_staticParams.szDecoyPrefix, iLenDecoyPrefix))
+            {
+               if (iPrintTargetDecoy == 2)
+                  vProteinDecoys.push_back(sProteinName);
+               else if (iPrintTargetDecoy == 0)
+                  vTmpDecoys.push_back(sProteinName);
+            }
+            else if (iPrintTargetDecoy != 2)
+            {
+               vProteinTargets.push_back(sProteinName);
+            }
+
+            iPrintDuplicateProteinCt++;
+            if (iPrintDuplicateProteinCt >= g_staticParams.options.iMaxDuplicateProteins)
+               break;
+         }
+
+         if (iPrintTargetDecoy == 0 && !vTmpDecoys.empty())
+            vProteinTargets.insert(vProteinTargets.end(), vTmpDecoys.begin(), vTmpDecoys.end());
+
+         return;
+      }
 
       *uiNumTotProteins = (unsigned int)g_pvProteinsList.at(pOutput[iWhichResult].lProteinFilePosition).size();
 

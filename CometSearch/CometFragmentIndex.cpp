@@ -19,12 +19,14 @@
 #include "CometStatus.h"
 #include "CometMassSpecUtils.h"
 #include "CometModificationsPermuter.h"
+#include "CometPlusMultiDB.h"
 
 #include <cstdio>
 #include <iostream>
 #include <sstream>
 #include <bitset>
 #include <limits>
+#include <unordered_map>
 
 
 vector<ModificationNumber> MOD_NUMBERS;
@@ -871,6 +873,314 @@ bool CometFragmentIndex::ReadPlainPeptideIndex(void)
 
    if (g_bPlainPeptideIndexRead)
       return 1;
+
+   if (g_bCometPlusMultiIdxMode && g_vCometPlusIdxContexts.size() > 1)
+   {
+      g_vRawPeptides.clear();
+      g_pvProteinsList.clear();
+
+      std::unordered_map<string, size_t> mPeptideToRawIndex;
+      bool bFoundStatic = false;
+      bool bFoundVariable = false;
+
+      for (size_t iCtx = 0; iCtx < g_vCometPlusIdxContexts.size(); ++iCtx)
+      {
+         CometPlusIdxContext& ctx = g_vCometPlusIdxContexts.at(iCtx);
+         fp = fopen(ctx.sPath.c_str(), "rb");
+         if (fp == NULL)
+         {
+            string strErrorMsg = " Error - cannot open index file " + ctx.sPath + " to read.\n";
+            logerr(strErrorMsg);
+            return false;
+         }
+
+         bool bCtxFoundStatic = false;
+         bool bCtxFoundVariable = false;
+
+         while (fgets(szBuf, SIZE_BUF, fp))
+         {
+            if (!strncmp(szBuf, "MassType:", 9))
+            {
+               iRet = sscanf(szBuf + 9, "%d %d", &g_staticParams.massUtility.bMonoMassesParent, &g_staticParams.massUtility.bMonoMassesFragment);
+               if (iRet != 2)
+               {
+                  string strErrorMsg = " Error with raw peptide index database format. MassType: did not parse 2 values.\n";
+                  logerr(strErrorMsg);
+                  fclose(fp);
+                  return false;
+               }
+            }
+            else if (!strncmp(szBuf, "LengthRange:", 12))
+            {
+               iRet = sscanf(szBuf + 12, "%d %d", &g_staticParams.options.peptideLengthRange.iStart, &g_staticParams.options.peptideLengthRange.iEnd);
+               if (iRet != 2)
+               {
+                  string strErrorMsg = " Error with raw peptide index database format. LengthRange: did not parse 2 values.\n";
+                  logerr(strErrorMsg);
+                  fclose(fp);
+                  return false;
+               }
+            }
+            else if (!strncmp(szBuf, "Enzyme:", 7))
+            {
+               iRet = sscanf(szBuf + 7, "%*s [%d %s %s]", &g_staticParams.enzymeInformation.iSearchEnzymeOffSet,
+                  g_staticParams.enzymeInformation.szSearchEnzymeBreakAA,
+                  g_staticParams.enzymeInformation.szSearchEnzymeNoBreakAA);
+               if (iRet != 3)
+               {
+                  string strErrorMsg = " Error with raw peptide index database format. Enzyme: did not parse 3 values.\n";
+                  logerr(strErrorMsg);
+                  fclose(fp);
+                  return false;
+               }
+            }
+            else if (!strncmp(szBuf, "Enzyme2:", 8))
+            {
+               iRet = sscanf(szBuf + 8, "%*s [%d %s %s]", &g_staticParams.enzymeInformation.iSearchEnzyme2OffSet,
+                  g_staticParams.enzymeInformation.szSearchEnzyme2BreakAA,
+                  g_staticParams.enzymeInformation.szSearchEnzyme2NoBreakAA);
+               if (iRet != 3)
+               {
+                  string strErrorMsg = " Error with raw peptide index database format. Enzyme2: did not parse 3 values.\n";
+                  logerr(strErrorMsg);
+                  fclose(fp);
+                  return false;
+               }
+            }
+            else if (!strncmp(szBuf, "StaticMod:", 10))
+            {
+               char* tok;
+               char delims[] = " ";
+               int x = 65;
+
+               CometMassSpecUtils::AssignMass(g_staticParams.massUtility.pdAAMassFragment,
+                  g_staticParams.massUtility.bMonoMassesFragment,
+                  &g_staticParams.massUtility.dOH2fragment);
+
+               bCtxFoundStatic = true;
+               tok = strtok(szBuf + 11, delims);
+               while (tok != NULL)
+               {
+                  iRet = sscanf(tok, "%lf", &(g_staticParams.staticModifications.pdStaticMods[x]));
+                  g_staticParams.massUtility.pdAAMassFragment[x] += g_staticParams.staticModifications.pdStaticMods[x];
+                  g_staticParams.massUtility.pdAAMassParent[x] += g_staticParams.staticModifications.pdStaticMods[x];
+                  tok = strtok(NULL, delims);
+                  x++;
+                  if (x == 95)
+                     break;
+               }
+
+               g_staticParams.staticModifications.dAddNterminusPeptide = g_staticParams.staticModifications.pdStaticMods[91];
+               g_staticParams.staticModifications.dAddCterminusPeptide = g_staticParams.staticModifications.pdStaticMods[92];
+               g_staticParams.staticModifications.dAddNterminusProtein = g_staticParams.staticModifications.pdStaticMods[93];
+               g_staticParams.staticModifications.dAddCterminusProtein = g_staticParams.staticModifications.pdStaticMods[94];
+
+               g_staticParams.precalcMasses.dNtermProton = g_staticParams.staticModifications.dAddNterminusPeptide + PROTON_MASS;
+               g_staticParams.precalcMasses.dCtermOH2Proton = g_staticParams.staticModifications.dAddCterminusPeptide
+                  + g_staticParams.massUtility.dOH2fragment + PROTON_MASS;
+               g_staticParams.precalcMasses.dOH2ProtonCtermNterm = g_staticParams.massUtility.dOH2parent
+                  + PROTON_MASS
+                  + g_staticParams.staticModifications.dAddCterminusPeptide
+                  + g_staticParams.staticModifications.dAddNterminusPeptide;
+            }
+            else if (!strncmp(szBuf, "VariableMod:", 12))
+            {
+               string strMods = szBuf + 13;
+               istringstream iss(strMods);
+               int iNumMods = 0;
+
+               do
+               {
+                  string subStr;
+                  iss >> subStr;
+                  std::replace(subStr.begin(), subStr.end(), ':', ' ');
+                  iRet = sscanf(subStr.c_str(), "%s %lf %lf %lf",
+                     g_staticParams.variableModParameters.varModList[iNumMods].szVarModChar,
+                     &(g_staticParams.variableModParameters.varModList[iNumMods].dVarModMass),
+                     &(g_staticParams.variableModParameters.varModList[iNumMods].dNeutralLoss),
+                     &(g_staticParams.variableModParameters.varModList[iNumMods].dNeutralLoss2));
+
+                  if (g_staticParams.variableModParameters.varModList[iNumMods].dVarModMass != 0.0)
+                     g_staticParams.variableModParameters.bVarModSearch = true;
+
+                  if (g_staticParams.variableModParameters.varModList[iNumMods].dNeutralLoss != 0.0)
+                     g_staticParams.variableModParameters.bUseFragmentNeutralLoss = true;
+
+                  iNumMods++;
+                  if (iNumMods == FRAGINDEX_VMODS)
+                     break;
+
+               } while (iss);
+
+               bCtxFoundVariable = true;
+            }
+            else if (!strncmp(szBuf, "ProteinModList:", 15))
+            {
+               int iTmp;
+               iRet = sscanf(szBuf + 16, "%d", &iTmp);
+               if (iTmp)
+                  g_staticParams.variableModParameters.bVarModProteinFilter = true;
+            }
+            else if (!strncmp(szBuf, "RequireVariableMod:", 19))
+            {
+               string strMods = szBuf + 20;
+               istringstream iss(strMods);
+               int iNumMods = 0;
+
+               do
+               {
+                  string subStr;
+                  int iIntData;
+                  iss >> subStr;
+                  iRet = sscanf(subStr.c_str(), "%d", &iIntData);
+
+                  if (iNumMods == 0)
+                  {
+                     if (iIntData > 0)
+                        g_staticParams.variableModParameters.iRequireVarMod |= 1UL << 0;
+                     else
+                        g_staticParams.variableModParameters.iRequireVarMod = 0;
+                  }
+                  else
+                  {
+                     if (iIntData > 0)
+                        g_staticParams.variableModParameters.iRequireVarMod |= 1UL << iNumMods;
+                     g_staticParams.variableModParameters.varModList[iNumMods - 1].iRequireThisMod = iIntData;
+                  }
+
+                  iNumMods++;
+                  if (iNumMods == FRAGINDEX_VMODS + 1)
+                     break;
+
+               } while (iss);
+
+               break;
+            }
+         }
+
+         if (!bCtxFoundStatic || !bCtxFoundVariable)
+         {
+            string strErrorMsg = " Error with raw peptide index database format. Modifications ("
+               + std::to_string(bCtxFoundStatic) + "/" + std::to_string(bCtxFoundVariable) + ") not parsed.\n";
+            logerr(strErrorMsg);
+            fclose(fp);
+            return false;
+         }
+
+         bFoundStatic = bFoundStatic || bCtxFoundStatic;
+         bFoundVariable = bFoundVariable || bCtxFoundVariable;
+
+         comet_fileoffset_t clTmp;
+         comet_fileoffset_t clPeptidesFilePos;
+         comet_fileoffset_t clProteinsFilePos;
+         comet_fileoffset_t clPermutationsFilePos;
+
+         comet_fseek(fp, -clSizeCometFileOffset * 3, SEEK_END);
+         tTmp = fread(&clPeptidesFilePos, clSizeCometFileOffset, 1, fp);
+         tTmp = fread(&clProteinsFilePos, clSizeCometFileOffset, 1, fp);
+         tTmp = fread(&clPermutationsFilePos, clSizeCometFileOffset, 1, fp);
+         (void)clTmp;
+         (void)clPermutationsFilePos;
+
+         string sErrorMsg;
+         if (!CometPlusReadProteinSetsForContext(fp, clProteinsFilePos, ctx, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            fclose(fp);
+            return false;
+         }
+
+         comet_fseek(fp, clPeptidesFilePos, SEEK_SET);
+         size_t tNumPeptides = 0;
+         tTmp = fread(&tNumPeptides, sizeof(size_t), 1, fp);
+
+         struct PlainPeptideIndexStruct sTmp;
+         int iLen = 0;
+         char szPeptide[MAX_PEPTIDE_LEN];
+         for (size_t it = 0; it < tNumPeptides; ++it)
+         {
+            tTmp = fread(&iLen, sizeof(int), 1, fp);
+            tTmp = fread(szPeptide, sizeof(char), iLen, fp);
+            szPeptide[iLen] = '\0';
+
+            sTmp.sPeptide = szPeptide;
+            tTmp = fread(&(sTmp.cPrevAA), sizeof(char), 1, fp);
+            tTmp = fread(&(sTmp.cNextAA), sizeof(char), 1, fp);
+            tTmp = fread(&(sTmp.dPepMass), sizeof(double), 1, fp);
+            tTmp = fread(&(sTmp.siVarModProteinFilter), sizeof(unsigned short), 1, fp);
+
+            comet_fileoffset_t lLocalSetIndex = -1;
+            tTmp = fread(&lLocalSetIndex, clSizeCometFileOffset, 1, fp);
+            if (lLocalSetIndex < 0 || (size_t)lLocalSetIndex >= ctx.vLocalProteinSetToGlobalSet.size())
+            {
+               string strErrorMsg = " Error - invalid protein set entry found in \"" + ctx.sPath + "\".\n";
+               logerr(strErrorMsg);
+               fclose(fp);
+               return false;
+            }
+            sTmp.lIndexProteinFilePosition = ctx.vLocalProteinSetToGlobalSet[(size_t)lLocalSetIndex];
+
+            auto itExisting = mPeptideToRawIndex.find(sTmp.sPeptide);
+            if (itExisting == mPeptideToRawIndex.end())
+            {
+               size_t iNewIndex = g_vRawPeptides.size();
+               mPeptideToRawIndex[sTmp.sPeptide] = iNewIndex;
+               g_vRawPeptides.push_back(sTmp);
+            }
+            else
+            {
+               PlainPeptideIndexStruct& sExisting = g_vRawPeptides.at(itExisting->second);
+               int iMergedSet = CometPlusMergeProteinSetIndices(sExisting.lIndexProteinFilePosition, sTmp.lIndexProteinFilePosition);
+               sExisting.lIndexProteinFilePosition = iMergedSet;
+               sExisting.siVarModProteinFilter |= sTmp.siVarModProteinFilter;
+            }
+         }
+
+         fclose(fp);
+      }
+
+      if (!bFoundStatic || !bFoundVariable)
+      {
+         string strErrorMsg = " Error with multi-idx raw peptide database format. Modifications ("
+            + std::to_string(bFoundStatic) + "/" + std::to_string(bFoundVariable) + ") not parsed.\n";
+         logerr(strErrorMsg);
+         return false;
+      }
+
+      g_pvProteinsList.clear();
+      g_pvProteinsList.reserve(g_vCometPlusGlobalProteinSets.size());
+      for (size_t iSet = 0; iSet < g_vCometPlusGlobalProteinSets.size(); ++iSet)
+      {
+         vector<comet_fileoffset_t> vTmp;
+         vTmp.reserve(g_vCometPlusGlobalProteinSets[iSet].size());
+         for (size_t j = 0; j < g_vCometPlusGlobalProteinSets[iSet].size(); ++j)
+            vTmp.push_back((comet_fileoffset_t)g_vCometPlusGlobalProteinSets[iSet][j]);
+         g_pvProteinsList.push_back(vTmp);
+      }
+
+      MOD_NUMBERS.clear();
+      MOD_SEQS.clear();
+      if (MOD_SEQ_MOD_NUM_START != NULL)
+      {
+         delete[] MOD_SEQ_MOD_NUM_START;
+         MOD_SEQ_MOD_NUM_START = NULL;
+      }
+      if (MOD_SEQ_MOD_NUM_CNT != NULL)
+      {
+         delete[] MOD_SEQ_MOD_NUM_CNT;
+         MOD_SEQ_MOD_NUM_CNT = NULL;
+      }
+      if (PEPTIDE_MOD_SEQ_IDXS != NULL)
+      {
+         delete[] PEPTIDE_MOD_SEQ_IDXS;
+         PEPTIDE_MOD_SEQ_IDXS = NULL;
+      }
+
+      PermuteIndexPeptideMods(g_vRawPeptides);
+
+      g_bPlainPeptideIndexRead = true;
+      return true;
+   }
 
    if (g_staticParams.options.bCreateFragmentIndex && !strstr(g_staticParams.databaseInfo.szDatabase + strlen(g_staticParams.databaseInfo.szDatabase) - 4, ".idx"))
       strIndexFile = g_staticParams.databaseInfo.szDatabase + string(".idx");

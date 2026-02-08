@@ -1200,6 +1200,7 @@ void CometWriteMzIdentML::WriteInputs(FILE *fpout)
       strcpy(szSpectrumName, "scan number only nativeID format");
    }
    else if (!strcasecmp(g_staticParams.inputFile.szFileName + iLen - 5, ".mzml")
+         || !strcasecmp(g_staticParams.inputFile.szFileName + iLen - 6, ".mzmlb")
          || !strcasecmp(g_staticParams.inputFile.szFileName + iLen - 8, ".mzml.gz"))
    {
       strcpy (szFormatAccession, "MS:1000584");  // mzML
@@ -1216,7 +1217,8 @@ void CometWriteMzIdentML::WriteInputs(FILE *fpout)
       strcpy(szSpectrumAccession, "MS:1000776");
       strcpy(szSpectrumName, "scan number only nativeID format");
    }
-   else if (!strcasecmp(g_staticParams.inputFile.szFileName + iLen - 4, ".mgf"))
+   else if (!strcasecmp(g_staticParams.inputFile.szFileName + iLen - 4, ".mgf")
+         || !strcasecmp(g_staticParams.inputFile.szFileName + iLen - 7, ".mgf.gz"))
    {
       strcpy (szFormatAccession, "MS:1001062");  // mgf
       strcpy(szFormatName, "Mascot MGF file");

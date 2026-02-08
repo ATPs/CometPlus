@@ -5,9 +5,12 @@
 #
 .DEFAULT_GOAL := all
 
-# -- Uncomment these two variables, and set the correct path, to support HDF5 mass spec formats (.mz5 and .mzMLb)
-#HDF5 = -DMZP_HDF
-#HDF5_DIR = ../hdf5-1.14.0/hdf5
+# -- Optional HDF5 support for .mz5/.mzMLb
+# Set HDF5=1 and provide HDF5_DIR with static libraries.
+HDF5 ?= 0
+HDF5_DIR ?=
+HDF5_LIB_C ?= $(HDF5_DIR)/lib/libhdf5.a
+HDF5_LIB_CPP ?= $(HDF5_DIR)/lib/libhdf5_cpp.a
 
 C = gcc
 CC = g++
@@ -25,13 +28,19 @@ SFLAGS += -Wl,-z,norelro
 endif
 
 
-# -- Need to fix HDF5
-#ifdef HDF5
-#CFLAGS = -O3 -std=c++11 -I. -I./include -I$(HDF5_DIR)/include -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -DGCC -DHAVE_EXPAT_CONFIG_H $(HDF5)
-#SFLAGS = -O3 -std=c++11 -shared -fPIC -g -I. -I./include -I$(HDF5_DIR)/include  -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -DGCC -DHAVE_EXPAT_CONFIG_H $(HDF5)
-#else
-#CFLAGS = -O3 -std=c++11
-#endif
+ifeq ($(HDF5),1)
+ifeq ($(strip $(HDF5_DIR)),)
+$(error HDF5=1 requires HDF5_DIR to be set to an HDF5 install root)
+endif
+ifeq ($(wildcard $(HDF5_LIB_C)),)
+$(error HDF5=1 requires static HDF5 C library: $(HDF5_LIB_C))
+endif
+ifeq ($(wildcard $(HDF5_LIB_CPP)),)
+$(error HDF5=1 requires static HDF5 C++ library: $(HDF5_LIB_CPP))
+endif
+CFLAGS += -DMZP_HDF -I$(HDF5_DIR)/include
+SLFLAGS += -DMZP_HDF -I$(HDF5_DIR)/include
+endif
 
 SOVER = 2
 RELVER = $(SOVER).0.0
@@ -204,9 +213,9 @@ lib : mstoolkit mzparser
 	$(file >mstoolkit.mri,create libmstoolkit.a)
 	$(file >>mstoolkit.mri,addlib obj/libmst.a)
 	$(file >>mstoolkit.mri,addlib obj/libmzparser.a)
-ifdef HDF5
-	$(file >>mstoolkit.mri,addlib $(HDF5_DIR)/lib/libhdf5.a)
-	$(file >>mstoolkit.mri,addlib $(HDF5_DIR)/lib/libhdf5_cpp.a)
+ifeq ($(HDF5),1)
+	$(file >>mstoolkit.mri,addlib $(HDF5_LIB_C))
+	$(file >>mstoolkit.mri,addlib $(HDF5_LIB_CPP))
 endif
 	$(file >>mstoolkit.mri,save)
 	$(file >>mstoolkit.mri,end)
@@ -236,9 +245,9 @@ libextern : expat zlib
 	$(file >mstoolkitextern.mri,create libmstoolkitextern.a)
 	$(file >>mstoolkitextern.mri,addlib obj/libexpat.a)
 	$(file >>mstoolkitextern.mri,addlib obj/libz.a)
-ifdef HDF5
-	$(file >>mstoolkitextern.mri,addlib $(HDF5_DIR)/lib/libhdf5.a)
-	$(file >>mstoolkitextern.mri,addlib $(HDF5_DIR)/lib/libhdf5_cpp.a)
+ifeq ($(HDF5),1)
+	$(file >>mstoolkitextern.mri,addlib $(HDF5_LIB_C))
+	$(file >>mstoolkitextern.mri,addlib $(HDF5_LIB_CPP))
 endif
 	$(file >>mstoolkitextern.mri,save)
 	$(file >>mstoolkitextern.mri,end)
