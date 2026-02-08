@@ -95,7 +95,8 @@ void Usage(char *pszCmd)
    snprintf(szTmp, iSize, " CometPlus usage:  %s [options] <input_files>\n", pszCmd);
    logout(szTmp);
    logout("\n");
-   logout(" Supported input formats include mzXML, mzML, mzMLb, Thermo raw, mgf, mgf.gz, and ms2 variants (cms2, bms2, ms2)\n");
+   logout(" Supported input formats include mzXML, mzML, mzMLb, mzXML.gz, mzML.gz, Thermo raw, mgf, mgf.gz, and ms2 variants (cms2, bms2, ms2)\n");
+   logout(" Notes: gzip inputs currently supported are mzXML.gz, mzML.gz, and mgf.gz; ms2.gz is not supported.\n");
 
    logout("\n");
    logout("       options:  -p         to print out a comet.params.new file\n");
@@ -122,6 +123,8 @@ void Usage(char *pszCmd)
    snprintf(szTmp, iSize, "            or   %s -PParams.txt *.mzXML         <- use parameters in the file 'Params.txt'\n", pszCmd);
    logout(szTmp);
    snprintf(szTmp, iSize, "            or   %s --database db1.fasta --database db2.fasta file1.mzML\n", pszCmd);
+   logout(szTmp);
+   snprintf(szTmp, iSize, "            or   %s --database db.fasta file1.mzML.gz\n", pszCmd);
    logout(szTmp);
 
    logout("\n");
