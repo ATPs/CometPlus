@@ -22,6 +22,27 @@ To compile with Microsoft Visual Studio:
 
 - Right-mouse-click on the "Comet" project and choose "Build". This should generate a binary "Comet.exe" in x64/Release.
 
+## CometPlus Session
+
+CometPlus is an optional CLI wrapper in `ProtCosmo/CometPlus` that adds repeatable `--database` support while keeping Comet-compatible behavior.
+
+```bash
+# Build CometPlus
+make -C ProtCosmo/CometPlus
+
+# Check options
+./ProtCosmo/CometPlus/cometplus --help
+
+# Example search (single database)
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/proteins.fasta \
+  --name run1 \
+  /path/to/input.mzML
+```
+
+For additional build modes and multi-database examples, see `ProtCosmo/CometPlus/README.md`.
+
 Comet integrates:
 - Mike Hoopmann's [MSToolkit library](https://github.com/mhoopmann/mstoolkit) for reading various file formats.
 - Matthew Belmonte's C implementation of the [Twiddle algorithm](https://www.netlib.org/toms-2014-06-10/382) used in generating modification permutations.
