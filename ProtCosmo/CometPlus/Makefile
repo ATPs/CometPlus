@@ -29,6 +29,7 @@ endif
 EXECNAME = cometplus
 OBJDIR = obj
 OBJS = $(OBJDIR)/CometPlus.o
+OBJS += $(OBJDIR)/NovelModeUtils.o
 
 LIBPATHS = -L$(ROOT)/$(MSTOOLKIT) -L$(ROOT)/CometSearch -L$(ROOT)/$(ASCOREPRO)
 LIBS = -lcometsearch -lmstoolkit -lmstoolkitextern -lascorepro -lm -lpthread
@@ -80,6 +81,9 @@ $(OBJDIR):
 
 $(OBJDIR)/CometPlus.o: CometPlus/CometPlus.cpp | $(OBJDIR)
 	${CXX} ${CXXFLAGS} CometPlus/CometPlus.cpp -c -o $@
+
+$(OBJDIR)/NovelModeUtils.o: CometPlus/NovelModeUtils.cpp | $(OBJDIR)
+	${CXX} ${CXXFLAGS} CometPlus/NovelModeUtils.cpp -c -o $@
 
 $(OBJDIR)/StaticCompat.o: CometPlus/StaticCompat.cpp | $(OBJDIR)
 	${CC} -O2 -c CometPlus/StaticCompat.cpp -o $@

@@ -341,14 +341,20 @@ static InputType GetInputType(const char *pszFileName)
 static bool UpdateInputFile(InputFileInfo *pFileInfo)
 {
    bool bUpdateBaseName = false;
+   bool bPreserveCallerBaseName = false;
    char szTmpBaseName[SIZE_FILE];
 
-   // Make sure not set on command line OR more than 1 input file
-   // Need to do this check here before g_staticParams.inputFile is set to *pFileInfo
-   if (g_staticParams.inputFile.szBaseName[0] =='\0' || g_pvInputFiles.size()>1)
-      bUpdateBaseName = true;
-   else
-      strcpy(szTmpBaseName, g_staticParams.inputFile.szBaseName);
+   bPreserveCallerBaseName = (pFileInfo->szBaseName[0] != '\0');
+
+   if (!bPreserveCallerBaseName)
+   {
+      // Make sure not set on command line OR more than 1 input file
+      // Need to do this check here before g_staticParams.inputFile is set to *pFileInfo
+      if (g_staticParams.inputFile.szBaseName[0] =='\0' || g_pvInputFiles.size()>1)
+         bUpdateBaseName = true;
+      else
+         strcpy(szTmpBaseName, g_staticParams.inputFile.szBaseName);
+   }
 
    g_staticParams.inputFile = *pFileInfo;
 
@@ -375,7 +381,11 @@ static bool UpdateInputFile(InputFileInfo *pFileInfo)
    }
 
 #ifndef CRUX
-   if (bUpdateBaseName) // set individual basename from input file
+   if (bPreserveCallerBaseName)
+   {
+      // Keep caller-provided basename (e.g. CometPlus temporary spectrum routing).
+   }
+   else if (bUpdateBaseName) // set individual basename from input file
    {
       char *pStr;
       int iLen = (int)strlen(g_staticParams.inputFile.szFileName);

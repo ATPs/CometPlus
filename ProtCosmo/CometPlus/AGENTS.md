@@ -56,6 +56,22 @@ Avoid broad refactors outside these files for CometPlus features.
 
 `--thread` should only override `num_threads`; core thread semantics remain in `CometSearchManager`.
 
+## Novel Protein/Peptide + Scan Milestone Rules
+1. Keep new option orchestration in `ProtCosmo/CometPlus/CometPlus/CometPlus.cpp` first.
+2. Known `.idx` inputs must be reused; do not regenerate or mutate known `.idx` files.
+3. `--novel_peptide` must accept both FASTA and tokenized text input.
+4. Explicit scan filters must support comma/whitespace/newline delimiters and intersect with `-F/-L`.
+5. Preserve existing behavior for runs that do not use new options.
+6. Allow only minimal hooks in:
+- `CometSearch/CometSearchManager.cpp`
+- `CometSearch/CometPreprocess.cpp`
+- `CometSearch/CometData.h`
+- `CometSearch/CometPreprocess.h`
+7. Require validation to include:
+- legacy run parity,
+- known `.idx` non-regeneration path,
+- filtered-scan-only output behavior.
+
 ## Output Expectations
 For multi-idx mode in this milestone:
 
@@ -71,6 +87,9 @@ At minimum before handing off:
    - mixed FASTA + `.idx` rejected
    - mixed `.idx` types rejected
 4. If datasets available, run parity checks against baseline merged-db runs.
+5. Verify known `.idx` mode does not trigger index creation.
+6. Verify `--novel_protein/--novel_peptide` + `--scan/--scan_numbers` combinations.
+7. Verify `equal_I_and_L` subtraction behavior in both states.
 
 ## Practical Notes
 - Multi-idx protein-name output does not rely on a single open `.idx` handle.

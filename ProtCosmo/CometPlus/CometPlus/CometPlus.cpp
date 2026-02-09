@@ -18,11 +18,31 @@
 #include "CometDataInternal.h"
 #include "CometInterfaces.h"
 #include "CometPlusMultiDB.h"
+#include "NovelModeUtils.h"
 #include "githubsha.h"
+#include <algorithm>
+#include <cerrno>
+#include <climits>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <unordered_map>
+#include <unordered_set>
+#include <set>
+#include <map>
 #include <fstream>
+#include <sstream>
+#include <iterator>
+#ifndef _WIN32
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#endif
 
 using namespace CometInterfaces;
+
+static string g_sCometPlusExecutablePath;
 
 void Usage(char *pszCmd);
 void ProcessCmdLine(int argc,
@@ -30,17 +50,23 @@ void ProcessCmdLine(int argc,
                     char *szParamsFile,
                     vector<InputFileInfo*> &pvInputFiles,
                     ICometSearchManager *pSearchMgr,
-                    string &sMergedDatabasePath);
+                    string &sMergedDatabasePath,
+                    vector<string> &vTempArtifacts);
 void LoadParameters(char *pszParamsFile,
                     ICometSearchManager *pSearchMgr);
 void PrintParams(int iPrintParams);
 bool ValidateInputFile(char *pszInputFileName);
-bool IsIdxDatabasePath(const string& sPath);
-bool BuildMergedFasta(const vector<string>& vDatabases, string& sMergedDatabase, string& sErrorMsg);
 
 
 int main(int argc, char *argv[])
 {
+   g_sCometPlusExecutablePath = argv[0];
+#ifndef _WIN32
+   char szResolvedPath[PATH_MAX];
+   if (realpath(argv[0], szResolvedPath) != NULL)
+      g_sCometPlusExecutablePath = szResolvedPath;
+#endif
+
    // add git hash to version string if present
    if (strlen(GITHUBSHA) > 0)
    {
@@ -59,8 +85,9 @@ int main(int argc, char *argv[])
    ICometSearchManager* pCometSearchMgr = GetCometSearchManager();
    char szParamsFile[SIZE_FILE];
    string sMergedDatabasePath;
+   vector<string> vTempArtifacts;
 
-   ProcessCmdLine(argc, argv, szParamsFile, pvInputFiles, pCometSearchMgr, sMergedDatabasePath);
+   ProcessCmdLine(argc, argv, szParamsFile, pvInputFiles, pCometSearchMgr, sMergedDatabasePath, vTempArtifacts);
    pCometSearchMgr->AddInputFiles(pvInputFiles);
 
    bool bSearchSucceeded;
@@ -69,6 +96,12 @@ int main(int argc, char *argv[])
 
    if (!sMergedDatabasePath.empty())
       remove(sMergedDatabasePath.c_str());
+
+   for (size_t i = 0; i < vTempArtifacts.size(); ++i)
+   {
+      if (!vTempArtifacts.at(i).empty())
+         remove(vTempArtifacts.at(i).c_str());
+   }
 
    CometInterfaces::ReleaseCometSearchManager();
 
@@ -107,6 +140,10 @@ void Usage(char *pszCmd)
    logout("                 --name <name>          alias for -N<name>\n");
    logout("                 -D<dbase>  to specify a sequence database, overriding entry in parameters file\n");
    logout("                 --database <dbase>     repeatable; supports multi FASTA or multi .idx\n");
+   logout("                 --novel_protein <file> novel protein FASTA; digested using Comet settings\n");
+   logout("                 --novel_peptide <file> novel peptide input (FASTA or tokenized text)\n");
+   logout("                 --scan <file>          scan filter file; delimiters: comma/space/tab/newline\n");
+   logout("                 --scan_numbers <list>  explicit scan list, e.g. 1001,1002,1003\n");
    logout("                 --thread <num>         override num_threads parameter\n");
    logout("                 -F<num>    to specify the first/start scan to search, overriding entry in parameters file\n");
    logout("                 --first-scan <num>     alias for -F<num>\n");
@@ -125,6 +162,10 @@ void Usage(char *pszCmd)
    snprintf(szTmp, iSize, "            or   %s --database db1.fasta --database db2.fasta file1.mzML\n", pszCmd);
    logout(szTmp);
    snprintf(szTmp, iSize, "            or   %s --database db.fasta file1.mzML.gz\n", pszCmd);
+   logout(szTmp);
+   snprintf(szTmp, iSize, "            or   %s --novel_peptide novel.txt --scan_numbers 1001,1002 file1.mzML\n", pszCmd);
+   logout(szTmp);
+   snprintf(szTmp, iSize, "            or   %s --novel_protein novel.fasta --scan scan_ids.txt file1.mzML\n", pszCmd);
    logout(szTmp);
 
    logout("\n");
@@ -839,103 +880,13 @@ bool ParseCmdLine(char *cmd, InputFileInfo *pInputFile, ICometSearchManager *pSe
 } // ParseCmdLine
 
 
-bool IsIdxDatabasePath(const string& sPath)
-{
-   return (sPath.length() >= 4 && !STRCMP_IGNORE_CASE(sPath.c_str() + sPath.length() - 4, ".idx"));
-}
-
-
-bool BuildMergedFasta(const vector<string>& vDatabases, string& sMergedDatabase, string& sErrorMsg)
-{
-#ifdef _WIN32
-   char szTmpPath[MAX_PATH];
-   if (GetTempPathA(MAX_PATH, szTmpPath) == 0)
-   {
-      sErrorMsg = " Error - cannot determine temporary directory for merged FASTA.\n";
-      return false;
-   }
-
-   char szTmpFile[MAX_PATH];
-   if (GetTempFileNameA(szTmpPath, "cpx", 0, szTmpFile) == 0)
-   {
-      sErrorMsg = " Error - cannot create temporary file for merged FASTA.\n";
-      return false;
-   }
-
-   FILE* fpOut = fopen(szTmpFile, "wb");
-   if (fpOut == NULL)
-   {
-      sErrorMsg = " Error - cannot open temporary merged FASTA file \"" + string(szTmpFile) + "\".\n";
-      return false;
-   }
-
-   sMergedDatabase = szTmpFile;
-#else
-   char szTemplate[] = "/tmp/cometplus_db_XXXXXX";
-   int iFd = mkstemp(szTemplate);
-   if (iFd == -1)
-   {
-      sErrorMsg = " Error - cannot create temporary merged FASTA file.\n";
-      return false;
-   }
-
-   FILE* fpOut = fdopen(iFd, "wb");
-   if (fpOut == NULL)
-   {
-      close(iFd);
-      sErrorMsg = " Error - cannot open temporary merged FASTA file for writing.\n";
-      return false;
-   }
-
-   sMergedDatabase = szTemplate;
-#endif
-
-   const size_t iBufSize = 1 << 20;
-   vector<char> vBuf(iBufSize);
-
-   for (size_t i = 0; i < vDatabases.size(); ++i)
-   {
-      FILE* fpIn = fopen(vDatabases.at(i).c_str(), "rb");
-      if (fpIn == NULL)
-      {
-         fclose(fpOut);
-         remove(sMergedDatabase.c_str());
-         sMergedDatabase.clear();
-         sErrorMsg = " Error - cannot read FASTA file \"" + vDatabases.at(i) + "\".\n";
-         return false;
-      }
-
-      while (!feof(fpIn))
-      {
-         size_t iRead = fread(vBuf.data(), sizeof(char), vBuf.size(), fpIn);
-         if (iRead > 0)
-         {
-            if (fwrite(vBuf.data(), sizeof(char), iRead, fpOut) != iRead)
-            {
-               fclose(fpIn);
-               fclose(fpOut);
-               remove(sMergedDatabase.c_str());
-               sMergedDatabase.clear();
-               sErrorMsg = " Error - failed while writing merged FASTA.\n";
-               return false;
-            }
-         }
-      }
-
-      fclose(fpIn);
-   }
-
-   fclose(fpOut);
-   return true;
-}
-
-
 void ProcessCmdLine(int argc,
                     char *argv[],
                     char *szParamsFile,
                     vector<InputFileInfo*> &pvInputFiles,
                     ICometSearchManager *pSearchMgr,
-                    string &sMergedDatabasePath)
+                    string &sMergedDatabasePath,
+                    vector<string> &vTempArtifacts)
 {
    if (argc == 1)
    {
@@ -961,6 +912,7 @@ void ProcessCmdLine(int argc,
    string sOutputName;
    vector<string> vDatabases;
    vector<string> vInputArgs;
+   NovelModeOptions novelOpts;
 
    for (int iArg = 1; iArg < argc; ++iArg)
    {
@@ -1028,6 +980,22 @@ void ProcessCmdLine(int argc,
          {
             iLastScan = atoi(RequireValue(sName).c_str());
             bSetLastScan = true;
+         }
+         else if (sName == "novel_protein")
+         {
+            novelOpts.sNovelProteinPath = RequireValue(sName);
+         }
+         else if (sName == "novel_peptide")
+         {
+            novelOpts.sNovelPeptidePath = RequireValue(sName);
+         }
+         else if (sName == "scan")
+         {
+            novelOpts.sScanFilePath = RequireValue(sName);
+         }
+         else if (sName == "scan_numbers")
+         {
+            novelOpts.sScanNumbers = RequireValue(sName);
          }
          else
          {
@@ -1161,83 +1129,372 @@ void ProcessCmdLine(int argc,
       pSearchMgr->SetParam("create_peptide_index", "1", 1);
    }
 
-   if (!vDatabases.empty())
+   if ((bCreateFragmentIndex || bCreatePeptideIndex)
+         && (novelOpts.HasNovelMode() || novelOpts.HasExplicitScanFilter()))
    {
-      if (vDatabases.size() == 1)
+      string strErrorMsg = " Error - --novel_protein/--novel_peptide/--scan/--scan_numbers cannot be used with -i or -j.\n";
+      logerr(strErrorMsg);
+      exit(1);
+   }
+
+   if ((novelOpts.HasNovelMode() || novelOpts.HasExplicitScanFilter()) && vInputArgs.empty())
+   {
+      string strErrorMsg = " Error - at least one input spectrum file is required when using novel or scan subset options.\n";
+      logerr(strErrorMsg);
+      exit(1);
+   }
+
+   vector<string> vKnownDatabases = vDatabases;
+   if (vKnownDatabases.empty())
+   {
+      string sDatabaseFromParams;
+      if (pSearchMgr->GetParamValue("database_name", sDatabaseFromParams)
+            && !sDatabaseFromParams.empty())
       {
-         pSearchMgr->SetParam("database_name", vDatabases.at(0), vDatabases.at(0));
+         vKnownDatabases.push_back(sDatabaseFromParams);
+      }
+   }
+
+   bool bKnownAllIdx = true;
+   bool bKnownAllFasta = true;
+   int iKnownIdxType = 0;
+   for (size_t i = 0; i < vKnownDatabases.size(); ++i)
+   {
+      bool bIdx = IsIdxDatabasePath(vKnownDatabases.at(i));
+      if (bIdx)
+      {
+         bKnownAllFasta = false;
       }
       else
       {
-         bool bAllIdx = true;
-         bool bAllFasta = true;
-         for (size_t i = 0; i < vDatabases.size(); ++i)
-         {
-            bool bIdx = IsIdxDatabasePath(vDatabases.at(i));
-            if (bIdx)
-               bAllFasta = false;
-            else
-               bAllIdx = false;
-         }
+         bKnownAllIdx = false;
+      }
+   }
+   if (!vKnownDatabases.empty() && !(bKnownAllIdx || bKnownAllFasta))
+   {
+      string strErrorMsg = " Error - mixed database types are not allowed; provide either all FASTA files or all .idx files.\n";
+      logerr(strErrorMsg);
+      exit(1);
+   }
 
-         if (!(bAllIdx || bAllFasta))
+   if (bKnownAllIdx)
+   {
+      string sProbeError;
+      for (size_t i = 0; i < vKnownDatabases.size(); ++i)
+      {
+         int iObservedType = 0;
+         if (!CometPlusProbeIdxType(vKnownDatabases.at(i), iObservedType, sProbeError))
          {
-            string strErrorMsg = " Error - mixed database types are not allowed; provide either all FASTA files or all .idx files.\n";
-            logerr(strErrorMsg);
+            logerr(sProbeError);
             exit(1);
          }
 
-         string sDbList;
-         for (size_t i = 0; i < vDatabases.size(); ++i)
+         if (i == 0)
+            iKnownIdxType = iObservedType;
+         else if (iObservedType != iKnownIdxType)
          {
-            if (i > 0)
-               sDbList += "\n";
-            sDbList += vDatabases.at(i);
+            string strErrorMsg = " Error - mixed .idx types are not supported in one search invocation.\n";
+            logerr(strErrorMsg);
+            exit(1);
          }
+      }
+   }
 
-         if (bAllIdx)
+   int iEqualIL = 1;
+   pSearchMgr->GetParamValue("equal_I_and_L", iEqualIL);
+   bool bTreatSameIL = (iEqualIL != 0);
+
+   int iDecoySearch = 0;
+   pSearchMgr->GetParamValue("decoy_search", iDecoySearch);
+
+   vector<double> vNovelMasses;
+   string sNovelScoringDatabase;
+
+   if (novelOpts.HasNovelMode())
+   {
+      if (vKnownDatabases.empty())
+      {
+         string strErrorMsg = " Error - known database must be provided through --database or database_name in params when using novel options.\n";
+         logerr(strErrorMsg);
+         exit(1);
+      }
+
+      set<string> setKnownPeptides;
+      vector<PeptideMassEntry> vKnownEntries;
+      for (size_t iDb = 0; iDb < vKnownDatabases.size(); ++iDb)
+      {
+         const string& sDb = vKnownDatabases.at(iDb);
+         vector<PeptideMassEntry> vEntries;
+         string sErrorMsg;
+
+         if (IsIdxDatabasePath(sDb))
          {
-            int iProbeType = 0;
+            int iType = 0;
             string sProbeError;
-            for (size_t i = 0; i < vDatabases.size(); ++i)
+            if (!CometPlusProbeIdxType(sDb, iType, sProbeError))
             {
-               int iObservedType = 0;
-               if (!CometPlusProbeIdxType(vDatabases.at(i), iObservedType, sProbeError))
-               {
-                  logerr(sProbeError);
-                  exit(1);
-               }
-
-               if (i == 0)
-                  iProbeType = iObservedType;
-               else if (iObservedType != iProbeType)
-               {
-                  string strErrorMsg = " Error - mixed .idx types are not supported in one search invocation.\n";
-                  logerr(strErrorMsg);
-                  exit(1);
-               }
+               logerr(sProbeError);
+               exit(1);
             }
 
-            pSearchMgr->SetParam("database_name", vDatabases.at(0), vDatabases.at(0));
-            pSearchMgr->SetParam("database_name_list", sDbList, sDbList);
-            pSearchMgr->SetParam("cometplus_multi_db_mode", "multi_idx", string("multi_idx"));
+            bool bOk = false;
+            if (iType == 1)
+               bOk = ParseFragmentIdxEntries(sDb, vEntries, sErrorMsg);
+            else if (iType == 2)
+               bOk = ParsePeptideIdxEntries(sDb, vEntries, sErrorMsg);
+            else
+            {
+               sErrorMsg = " Error - unknown .idx type encountered while parsing known database.\n";
+               bOk = false;
+            }
+
+            if (!bOk)
+            {
+               logerr(sErrorMsg);
+               exit(1);
+            }
          }
          else
          {
-            string sErrorMsg;
-            if (!BuildMergedFasta(vDatabases, sMergedDatabasePath, sErrorMsg))
+            string sTmpFasta;
+            if (!BuildMergedFasta(vector<string>(1, sDb), sTmpFasta, sErrorMsg))
+            {
+               logerr(sErrorMsg);
+               exit(1);
+            }
+            vTempArtifacts.push_back(sTmpFasta);
+
+            if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sParamsFile, sTmpFasta, false, sErrorMsg))
             {
                logerr(sErrorMsg);
                exit(1);
             }
 
-            pSearchMgr->SetParam("database_name", sMergedDatabasePath, sMergedDatabasePath);
-            pSearchMgr->SetParam("database_name_list", sDbList, sDbList);
-            pSearchMgr->SetParam("cometplus_multi_db_mode", "multi_fasta", string("multi_fasta"));
+            string sTmpIdx = sTmpFasta + ".idx";
+            vTempArtifacts.push_back(sTmpIdx);
+            if (!ParsePeptideIdxEntries(sTmpIdx, vEntries, sErrorMsg))
+            {
+               logerr(sErrorMsg);
+               exit(1);
+            }
          }
+
+         vKnownEntries.insert(vKnownEntries.end(), vEntries.begin(), vEntries.end());
+      }
+
+      for (size_t i = 0; i < vKnownEntries.size(); ++i)
+      {
+         string sKey = NormalizePeptideForCompare(vKnownEntries.at(i).sPeptide, bTreatSameIL);
+         if (!sKey.empty())
+            setKnownPeptides.insert(sKey);
+      }
+
+      vector<PeptideMassEntry> vNovelEntries;
+
+      if (!novelOpts.sNovelProteinPath.empty())
+      {
+         string sErrorMsg;
+         string sTmpNovelProtein;
+         if (!BuildMergedFasta(vector<string>(1, novelOpts.sNovelProteinPath), sTmpNovelProtein, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+         vTempArtifacts.push_back(sTmpNovelProtein);
+
+         if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sParamsFile, sTmpNovelProtein, false, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+         string sTmpNovelProteinIdx = sTmpNovelProtein + ".idx";
+         vTempArtifacts.push_back(sTmpNovelProteinIdx);
+
+         vector<PeptideMassEntry> vTmp;
+         if (!ParsePeptideIdxEntries(sTmpNovelProteinIdx, vTmp, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+         vNovelEntries.insert(vNovelEntries.end(), vTmp.begin(), vTmp.end());
+      }
+
+      if (!novelOpts.sNovelPeptidePath.empty())
+      {
+         string sErrorMsg;
+         vector<string> vInputPeptides;
+         if (!ParseNovelPeptideFile(novelOpts.sNovelPeptidePath, vInputPeptides, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+
+         if (vInputPeptides.empty())
+         {
+            string strErrorMsg = " Error - no peptide entries were parsed from --novel_peptide input.\n";
+            logerr(strErrorMsg);
+            exit(1);
+         }
+
+         string sTmpNovelPeptideFasta;
+         if (!WritePeptidesToFasta(vInputPeptides, "cometplus_novel_peptide_input", sTmpNovelPeptideFasta, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+         vTempArtifacts.push_back(sTmpNovelPeptideFasta);
+
+         map<string, string> mOverrides;
+         int iNoCutEnzyme = -1;
+         if (!FindNoCutEnzymeNumber(sParamsFile, iNoCutEnzyme, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+         mOverrides["search_enzyme_number"] = std::to_string(iNoCutEnzyme);
+         mOverrides["search_enzyme2_number"] = "0";
+         mOverrides["allowed_missed_cleavage"] = "0";
+         mOverrides["num_enzyme_termini"] = "2";
+
+         string sTmpNoCutParams;
+         if (!BuildTemporaryParamsFile(sParamsFile, mOverrides, sTmpNoCutParams, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+         vTempArtifacts.push_back(sTmpNoCutParams);
+
+         if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sTmpNoCutParams, sTmpNovelPeptideFasta, false, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+         string sTmpNovelPeptideIdx = sTmpNovelPeptideFasta + ".idx";
+         vTempArtifacts.push_back(sTmpNovelPeptideIdx);
+
+         vector<PeptideMassEntry> vTmp;
+         if (!ParsePeptideIdxEntries(sTmpNovelPeptideIdx, vTmp, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+
+         for (size_t i = 0; i < vTmp.size(); ++i)
+            vTmp.at(i).bDecoy = false;
+
+         vNovelEntries.insert(vNovelEntries.end(), vTmp.begin(), vTmp.end());
+      }
+
+      struct NovelAggregate
+      {
+         string sRepresentativePeptide;
+         vector<double> vMasses;
+      };
+
+      unordered_map<string, NovelAggregate> mNovelAggregates;
+      for (size_t i = 0; i < vNovelEntries.size(); ++i)
+      {
+         string sKey = NormalizePeptideForCompare(vNovelEntries.at(i).sPeptide, bTreatSameIL);
+         if (sKey.empty())
+            continue;
+
+         if (mNovelAggregates.find(sKey) == mNovelAggregates.end())
+         {
+            NovelAggregate agg;
+            agg.sRepresentativePeptide = vNovelEntries.at(i).sPeptide;
+            mNovelAggregates[sKey] = agg;
+         }
+
+         if (vNovelEntries.at(i).dMass > 0.0)
+            mNovelAggregates[sKey].vMasses.push_back(vNovelEntries.at(i).dMass);
+      }
+
+      vector<string> vRemainingNovelPeptides;
+      set<double> setNovelMasses;
+      int iSubtractedCount = 0;
+      for (auto it = mNovelAggregates.begin(); it != mNovelAggregates.end(); ++it)
+      {
+         if (setKnownPeptides.find(it->first) != setKnownPeptides.end())
+         {
+            iSubtractedCount++;
+            continue;
+         }
+
+         vRemainingNovelPeptides.push_back(it->second.sRepresentativePeptide);
+         for (size_t i = 0; i < it->second.vMasses.size(); ++i)
+            setNovelMasses.insert(it->second.vMasses.at(i));
+      }
+
+      std::sort(vRemainingNovelPeptides.begin(), vRemainingNovelPeptides.end());
+      vRemainingNovelPeptides.erase(std::unique(vRemainingNovelPeptides.begin(), vRemainingNovelPeptides.end()),
+                                    vRemainingNovelPeptides.end());
+
+      vNovelMasses.assign(setNovelMasses.begin(), setNovelMasses.end());
+
+      char szLogBuf[512];
+      snprintf(szLogBuf, sizeof(szLogBuf),
+               " Novel mode: %zu unique novel peptides parsed, %d removed by known-db subtraction, %zu retained.\n",
+               mNovelAggregates.size(),
+               iSubtractedCount,
+               vRemainingNovelPeptides.size());
+      logout(szLogBuf);
+
+      if (iDecoySearch == 0)
+      {
+         logout(" Warning - decoy_search=0 in novel mode; novel peptide inputs are treated as target entries unless already encoded as decoy sequences.\n");
+      }
+
+      if (!vRemainingNovelPeptides.empty())
+      {
+         string sNovelFastaPath;
+         string sErrorMsg;
+         if (!WritePeptidesToFasta(vRemainingNovelPeptides, "cometplus_novel_scoring", sNovelFastaPath, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+         vTempArtifacts.push_back(sNovelFastaPath);
+
+         if (bKnownAllIdx)
+         {
+            bool bFragment = (iKnownIdxType == 1);
+            if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sParamsFile, sNovelFastaPath, bFragment, sErrorMsg))
+            {
+               logerr(sErrorMsg);
+               exit(1);
+            }
+
+            sNovelScoringDatabase = sNovelFastaPath + ".idx";
+            vTempArtifacts.push_back(sNovelScoringDatabase);
+         }
+         else
+         {
+            sNovelScoringDatabase = sNovelFastaPath;
+         }
+      }
+      else
+      {
+         logout(" Warning - no novel peptides remain after subtraction against known database(s); spectrum filtering will likely remove all scans.\n");
       }
    }
 
+   vector<string> vFinalDatabases = vKnownDatabases;
+   if (!sNovelScoringDatabase.empty())
+      vFinalDatabases.push_back(sNovelScoringDatabase);
+
+   if (!vFinalDatabases.empty())
+   {
+      string sErrorMsg;
+      if (!ConfigureDatabaseInputs(vFinalDatabases, pSearchMgr, sMergedDatabasePath, sErrorMsg))
+      {
+         logerr(sErrorMsg);
+         exit(1);
+      }
+      if (!sMergedDatabasePath.empty())
+         vTempArtifacts.push_back(sMergedDatabasePath);
+   }
+
+   vector<InputFileInfo*> vParsedInputs;
    for (size_t i = 0; i < vInputArgs.size(); ++i)
    {
       InputFileInfo* pInputFileInfo = new InputFileInfo();
@@ -1252,6 +1509,84 @@ void ProcessCmdLine(int argc,
          pvInputFiles.clear();
          exit(1);
       }
+      vParsedInputs.push_back(pInputFileInfo);
+   }
+
+   bool bNeedScanPrefilter = novelOpts.HasNovelMode() || novelOpts.HasExplicitScanFilter();
+   if (!bNeedScanPrefilter)
+   {
+      pvInputFiles = vParsedInputs;
+      return;
+   }
+
+   set<int> setExplicitScans;
+   string sErrorMsg;
+   if (!novelOpts.sScanNumbers.empty())
+   {
+      if (!ParseScanIntegersFromString(novelOpts.sScanNumbers, setExplicitScans, sErrorMsg, "--scan_numbers"))
+      {
+         logerr(sErrorMsg);
+         exit(1);
+      }
+   }
+   if (!novelOpts.sScanFilePath.empty())
+   {
+      if (!ParseScanIntegersFromFile(novelOpts.sScanFilePath, setExplicitScans, sErrorMsg, "--scan"))
+      {
+         logerr(sErrorMsg);
+         exit(1);
+      }
+   }
+   bool bUseExplicitScans = novelOpts.HasExplicitScanFilter();
+
+   NovelMassFilterContext novelMassCtx = {};
+   if (!pSearchMgr->GetParamValue("ms_level", novelMassCtx.iMSLevel))
+      novelMassCtx.iMSLevel = 2;
+   if (novelOpts.HasNovelMode())
+   {
+      if (!BuildNovelMassFilterContext(pSearchMgr, novelMassCtx, sErrorMsg))
+      {
+         logerr(sErrorMsg);
+         exit(1);
+      }
+   }
+
+   for (size_t i = 0; i < vParsedInputs.size(); ++i)
+   {
+      InputFileInfo* pInputFileInfo = vParsedInputs.at(i);
+      string sOriginalPath = pInputFileInfo->szFileName;
+      string sOutputBaseName = ComputeInputBaseName(sOriginalPath);
+
+      string sTempMgfPath;
+      int iNumScansKept = 0;
+      if (!FilterInputFileToTempMgf(*pInputFileInfo,
+                                    setExplicitScans,
+                                    bUseExplicitScans,
+                                    vNovelMasses,
+                                    novelOpts.HasNovelMode(),
+                                    novelMassCtx,
+                                    sTempMgfPath,
+                                    iNumScansKept,
+                                    sErrorMsg))
+      {
+         logerr(sErrorMsg);
+         exit(1);
+      }
+
+      vTempArtifacts.push_back(sTempMgfPath);
+
+      strncpy(pInputFileInfo->szFileName, sTempMgfPath.c_str(), SIZE_FILE - 1);
+      pInputFileInfo->szFileName[SIZE_FILE - 1] = '\0';
+      strncpy(pInputFileInfo->szBaseName, sOutputBaseName.c_str(), SIZE_FILE - 1);
+      pInputFileInfo->szBaseName[SIZE_FILE - 1] = '\0';
+
+      char szLogBuf[512];
+      snprintf(szLogBuf, sizeof(szLogBuf),
+               " Scan prefilter: \"%s\" -> %d scans retained.\n",
+               sOriginalPath.c_str(),
+               iNumScansKept);
+      logout(szLogBuf);
+
       pvInputFiles.push_back(pInputFileInfo);
    }
 } // ProcessCmdLine
@@ -1562,3 +1897,4 @@ bool ValidateInputFile(char *pszInputFileName)
    fclose(fp);
    return true;
 }
+
