@@ -7,7 +7,9 @@ Supported spectrum inputs:
 - `mzML`
 - `mzMLb` (requires HDF5-enabled MSToolkit build)
 - `mgf`
-- `mgf.gz` (inflated to a temporary `.mgf` in the output directory during search)
+- `mzXML.gz`
+- `mzML.gz`
+- `mgf.gz`
 - `ms2` variants (`ms2`, `cms2`, `bms2`)
 - Thermo RAW (platform/toolchain dependent)
 
@@ -21,6 +23,9 @@ For static Linux builds, this project uses:
 - `x86_64-conda-linux-gnu-g++`
 - `x86_64-conda-linux-gnu-gcc`
 
+Reproducible static build notes and validation commands are documented in:
+- `ProtCosmo/CometPlus/build.md`
+
 ## Build Matrix
 
 ### 1) Default build
@@ -31,7 +36,7 @@ make -C ProtCosmo/CometPlus
 ### 2) Static build (no mzMLb/HDF5 requirement)
 ```bash
 make -C ProtCosmo/CometPlus clean
-make -C ProtCosmo/CometPlus static
+make -C ProtCosmo/CometPlus static WITH_MZMLB=0
 ```
 
 ### 3) Static build with mzMLb enabled
@@ -39,7 +44,7 @@ make -C ProtCosmo/CometPlus static
 make -C ProtCosmo/CometPlus clean
 make -C ProtCosmo/CometPlus static \
   WITH_MZMLB=1 \
-  HDF5_DIR=/abs/path/to/hdf5-static-cxx
+  HDF5_DIR=/data/p/hdf5/hdf5-1.14.4-3_build_native_cpp
 ```
 
 Optional explicit overrides:
@@ -52,6 +57,10 @@ make -C ProtCosmo/CometPlus static \
 ```
 
 ## HDF5 Prerequisite for mzMLb
+
+Environment-specific note:
+- tested mzMLb-enabled static prefix: `/data/p/hdf5/hdf5-1.14.4-3_build_native_cpp`
+- do not use `/data/p/hdf5/hdf5-1.14.4-3_build_static_cpp` for mzMLb runtime in this environment (observed: `required filter 'deflate' is not registered`)
 
 `WITH_MZMLB=1` requires both of these files:
 - `include/H5Cpp.h`
@@ -89,13 +98,25 @@ ldd ProtCosmo/CometPlus/cometplus
 Expected for static target:
 - `statically linked`
 - `not a dynamic executable`
+- binary size is typically much larger than dynamic builds (for example, around `10-15 MB` vs around `4 MB`)
+
+For `WITH_MZMLB=0` (no mzMLb), confirm no HDF5 link symbols:
+```bash
+nm -A ProtCosmo/CometPlus/cometplus 2>/dev/null | rg -i "\\bH5[A-Za-z0-9_]*\\b|hdf5"
+```
+Expected output: no matches.
+
+For `WITH_MZMLB=1` (mzMLb enabled), the same command should show `H5...` symbols.
 
 ## Gzip Input Notes
 
-- `mzXML.gz` and `mzML.gz` are read through the native MSToolkit gzip path.
-- `mgf.gz` is handled by CometPlus/CometSearch using a temporary `.mgf` file:
+- `mzXML.gz`, `mzML.gz`, and `mgf.gz` are handled by CometPlus/CometSearch using temporary inflated files:
+  - `.mzXML.gz` -> temp `.mzXML`
+  - `.mzML.gz` -> temp `.mzML`
+  - `.mgf.gz` -> temp `.mgf`
+- Temporary file behavior:
   - temporary file directory is derived from the output base path (`-N/--name` or input basename),
-  - the original input path remains `.mgf.gz` for reporting/metadata,
+  - the original input path remains the original `.gz` path for reporting/metadata,
   - temporary file is removed automatically at normal completion and handled error exits.
 - `ms2.gz` is not supported in this milestone.
 

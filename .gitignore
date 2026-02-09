@@ -13,7 +13,14 @@ MSToolkit/include/zlib.h
 *.log
 tmp/
 
-MSToolkit/
+# Keep MSToolkit source tracked, ignore its generated build artifacts.
+MSToolkit/build/
+MSToolkit/obj/
+MSToolkit/lic/
+MSToolkit/mstoolkitextern.mri
+MSToolkit/src/expat-2.2.9/
+MSToolkit/src/zlib-1.2.11/
+MSToolkit/include/extern/expat_config.h
 *.pyc
 
 # Created by https://www.toptal.com/developers/gitignore/api/c++
@@ -156,8 +163,8 @@ ipch/
 *.msp
 comet.params.new
 
-*/*/test*
-ProtCosmo/CometPlus/multiple_input_db
-plan.*md
-design*.md
+# */*/test*
+# ProtCosmo/CometPlus/multiple_input_db
+# plan.*md
+# design*.md
 ProtCosmo/CometPlus/cometplus

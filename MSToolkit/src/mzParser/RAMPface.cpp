@@ -697,11 +697,18 @@ ramp_fileoffset_t* mzParser::readIndex(RAMPFILE *pFI, ramp_fileoffset_t indexOff
 #endif
   ramp_fileoffset_t* rIndex;
   size_t i;
+  size_t iLastIdx;
   switch(pFI->fileType){
     case 1:
     case 3:
     case 6:
       v=pFI->mzML->getSpecIndex();
+      if (v==NULL || v->size()==0){
+        rIndex = (ramp_fileoffset_t *) malloc(2*sizeof(ramp_fileoffset_t));
+        memset(rIndex,-1,2*sizeof(ramp_fileoffset_t));
+        *iLastScan=0;
+        break;
+      }
       rIndex = (ramp_fileoffset_t *) malloc((pFI->mzML->highScan()+2)*sizeof(ramp_fileoffset_t));
       memset(rIndex,-1,(pFI->mzML->highScan()+2)*sizeof(ramp_fileoffset_t));
       if(pFI->fileType==6){
@@ -709,26 +716,41 @@ ramp_fileoffset_t* mzParser::readIndex(RAMPFILE *pFI, ramp_fileoffset_t indexOff
       } else {
         for(i=0;i<v->size();i++) rIndex[v->at(i).scanNum]=(ramp_fileoffset_t)v->at(i).offset;
       }
-      rIndex[v->at(i-1).scanNum+1]=-1;
-      *iLastScan=(int)v->at(i-1).scanNum;
+      iLastIdx=v->size()-1;
+      rIndex[v->at(iLastIdx).scanNum+1]=-1;
+      *iLastScan=(int)v->at(iLastIdx).scanNum;
       break;
     case 2:
     case 4:
       v=pFI->mzXML->getIndex();
+      if (v==NULL || v->size()==0){
+        rIndex = (ramp_fileoffset_t *) malloc(2*sizeof(ramp_fileoffset_t));
+        memset(rIndex,-1,2*sizeof(ramp_fileoffset_t));
+        *iLastScan=0;
+        break;
+      }
       rIndex = (ramp_fileoffset_t *) malloc((pFI->mzXML->highScan()+2)*sizeof(ramp_fileoffset_t));
       memset(rIndex,-1,(pFI->mzXML->highScan()+2)*sizeof(ramp_fileoffset_t));
       for(i=0;i<v->size();i++) rIndex[v->at(i).scanNum]=(ramp_fileoffset_t)v->at(i).offset;
-      rIndex[v->at(i-1).scanNum+1]=-1;
-      *iLastScan=(int)v->at(i-1).scanNum;
+      iLastIdx=v->size()-1;
+      rIndex[v->at(iLastIdx).scanNum+1]=-1;
+      *iLastScan=(int)v->at(iLastIdx).scanNum;
       break;
 #ifdef MZP_HDF
     case 5:
       v2=pFI->mz5->getSpecIndex();
+      if (v2==NULL || v2->size()==0){
+        rIndex = (ramp_fileoffset_t *) malloc(2*sizeof(ramp_fileoffset_t));
+        memset(rIndex,-1,2*sizeof(ramp_fileoffset_t));
+        *iLastScan=0;
+        break;
+      }
       rIndex = (ramp_fileoffset_t *) malloc((pFI->mz5->highScan()+2)*sizeof(ramp_fileoffset_t));
       memset(rIndex,-1,(pFI->mz5->highScan()+2)*sizeof(ramp_fileoffset_t));
       for(i=0;i<v2->size();i++) rIndex[v2->at(i).scanNum]=(ramp_fileoffset_t)v2->at(i).offset;
-      rIndex[v2->at(i-1).scanNum+1]=-1;
-      *iLastScan=(int)v2->at(i-1).scanNum;
+      iLastIdx=v2->size()-1;
+      rIndex[v2->at(iLastIdx).scanNum+1]=-1;
+      *iLastScan=(int)v2->at(iLastIdx).scanNum;
       break;
 #endif
     default:

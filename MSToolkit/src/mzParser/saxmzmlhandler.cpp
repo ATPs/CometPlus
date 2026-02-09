@@ -37,6 +37,97 @@
 using namespace std;
 using namespace mzParser;
 
+static bool ExtractTagAttribute(const string& sTag, const char* szAttr, string& sValue){
+  sValue.clear();
+  string sNeedle = string(szAttr) + "=\"";
+  size_t iStart = sTag.find(sNeedle);
+  if(iStart==string::npos) return false;
+  iStart += sNeedle.size();
+  size_t iStop = sTag.find('"',iStart);
+  if(iStop==string::npos) return false;
+  sValue = sTag.substr(iStart,iStop-iStart);
+  return true;
+}
+
+static bool TryParseScanNumFromIdRef(const string& sIdRef, int& iScanIDXCount, long& lScanNum){
+  const char* pStr = sIdRef.c_str();
+  const char* pFound;
+
+  pFound = strstr(pStr,"scan=");
+  if(pFound!=NULL){
+    lScanNum = atol(pFound+5);
+    return true;
+  }
+
+  pFound = strstr(pStr,"scanId=");
+  if(pFound!=NULL){
+    lScanNum = atol(pFound+7);
+    return true;
+  }
+
+  if(strstr(pStr,"frame")!=NULL){
+    lScanNum = ++iScanIDXCount;
+    return true;
+  }
+
+  pFound = strstr(pStr,"S");
+  if(pFound!=NULL){
+    lScanNum = atol(pFound+1);
+    return true;
+  }
+
+  pFound = strstr(pStr,"index=");
+  if(pFound!=NULL){
+    lScanNum = atol(pFound+6);
+    return true;
+  }
+
+  return false;
+}
+
+static void AppendGeneratedSpectrumIndex(const string& sTag,
+                                         f_off lSpectrumOffset,
+                                         bool bThermoFile,
+                                         int& iScanIDXCount,
+                                         vector<cindex>& vIndex,
+                                         map<string, size_t>& mIndex,
+                                         bool& bIndexSorted){
+  string sIdRef;
+  string sIndex;
+  long lScanNum = 0;
+  bool bHasScanNum = false;
+
+  if(ExtractTagAttribute(sTag, "id", sIdRef) && !sIdRef.empty()){
+    bHasScanNum = TryParseScanNumFromIdRef(sIdRef, iScanIDXCount, lScanNum);
+  }
+
+  if(!bHasScanNum && ExtractTagAttribute(sTag, "index", sIndex)){
+    lScanNum = atol(sIndex.c_str());
+    if(bThermoFile) lScanNum += 1;
+    bHasScanNum = true;
+  }
+
+  if(!bHasScanNum){
+    lScanNum = ++iScanIDXCount;
+  }
+
+  cindex ci;
+  ci.scanNum = lScanNum;
+  ci.idRef = sIdRef;
+  ci.offset = lSpectrumOffset;
+
+  if(bIndexSorted && vIndex.size()>0){
+    if(ci.scanNum<vIndex.back().scanNum){
+      bIndexSorted = false;
+    }
+  }
+
+  vIndex.push_back(ci);
+  if(!sIdRef.empty()){
+    mIndex.insert(pair<string, size_t>(sIdRef, ci.scanNum));
+  }
+}
+
 mzpSAXMzmlHandler::mzpSAXMzmlHandler(BasicSpectrum* bs){
   m_bChromatogramIndex = false;
   m_bInmzArrayBinary = false;
@@ -880,6 +971,11 @@ void mzpSAXMzmlHandler::decode(vector<double>& d){
 
   //Base64 decoding
   decodeLen = b64_decode_mio(decoded,(char*)pData,stringSize);
+  if(decodeLen<=0){
+    delete [] decoded;
+    cout << "Error - failed to decode mzML base64 binary data." << endl;
+    exit(EXIT_FAILURE);
+  }
 
   //zlib decompression
   if(m_bZlib) {
@@ -893,14 +989,43 @@ void mzpSAXMzmlHandler::decode(vector<double>& d){
         cout << "Unknown data format to unzip. Stopping file read." << endl;
         exit(EXIT_FAILURE);
       }
-    //don't know the unzipped size of numpressed data, so assume it to be no larger than unpressed 64-bit data
-    unzippedLen = m_peaksCount*sizeof(uint64_t);
+      // Numpress streams can exceed peaksCount*sizeof(uint64_t) for small arrays.
+      unzippedLen = m_peaksCount*sizeof(uint64_t);
     }
 
-    unzipped = new Bytef[unzippedLen];
-    uncompress((Bytef*)unzipped, &unzippedLen, (const Bytef*)decoded, (uLong)decodeLen);
-    delete [] decoded;
+    if(unzippedLen<64){
+      unzippedLen=64;
+    }
 
+    int iZlibStatus=Z_BUF_ERROR;
+    const uLong kMaxInflatedBytes = 1024UL*1024UL*1024UL;  // 1 GiB safety cap
+    while(iZlibStatus==Z_BUF_ERROR){
+      unzipped = new Bytef[unzippedLen];
+      uLong unzippedLenTry = unzippedLen;
+      iZlibStatus = uncompress((Bytef*)unzipped, &unzippedLenTry, (const Bytef*)decoded, (uLong)decodeLen);
+      if(iZlibStatus==Z_OK){
+        unzippedLen = unzippedLenTry;
+        break;
+      }
+
+      delete [] unzipped;
+      unzipped=NULL;
+
+      if(iZlibStatus==Z_BUF_ERROR){
+        if(unzippedLen>=kMaxInflatedBytes/2){
+          break;
+        }
+        unzippedLen*=2;
+      }
+    }
+
+    if(iZlibStatus!=Z_OK){
+      delete [] decoded;
+      cout << "Error - zlib decompression failed while decoding mzML binary data (status " << iZlibStatus << ")." << endl;
+      exit(EXIT_FAILURE);
+    }
+
+    delete [] decoded;
   }
 
   //Numpress decompression
@@ -1223,59 +1348,107 @@ void mzpSAXMzmlHandler::readHDFIndex(){
 bool mzpSAXMzmlHandler::generateIndexOffset() {
   char chunk[CHUNK];
   int readBytes;
-  long lOffset = 0;
+  bool bThermoFile = false;
 
   if(!m_bGZCompression){
     FILE* f=fopen(&m_strFileName[0],"r");
-    char *pStr;
-
     if (f==NULL){
       cout << "Error cannot open file " << m_strFileName[0] << endl;
       exit(EXIT_FAILURE);
     }
 
-    bool bReadingFirstSpectrum = true;
-    bool bThermoFile = false;
+    while(true){
+      f_off lLineOffset = ftell(f);
+      if(fgets(chunk, CHUNK, f)==NULL) break;
 
-    while (fgets(chunk, CHUNK, f)){
-
-      // Treat thermo files differently. Always report scan 'index' value which start at 0
-      // except for Thermo files where historically we're used to starting at scan 1.
-      if (strstr(chunk, "MS:1000768"))
-         bThermoFile = true;
-
-      if (strstr(chunk, "<spectrum ")){
-        long scanNum;
-        bool bSuccessfullyReadScan = false;
-        do{
-          // now need to look for "index="
-          if ((pStr = strstr(chunk, "index=\"")) != NULL){
-            sscanf(pStr+7, "%ld", &scanNum);
-            bSuccessfullyReadScan = true;
-          }
-
-          if ((pStr = strstr(chunk, "</spectrum>")) != NULL){
-            if (bSuccessfullyReadScan){  // not that we've reached the next spectrum, store index offset
-              if (bThermoFile)  // start scan count at 1 instead of 0
-                 scanNum += 1;
-              curIndex.scanNum = scanNum;
-              curIndex.idRef = "";
-              curIndex.offset = lOffset;
-              m_vIndex.push_back(curIndex);
-              break;
-            }
-            else{
-              printf(" error, found \"<spectrum\" line before parsing index attribute of previous scan:  %s\n", pStr);
-              return false;
-            }
-          }
-          bReadingFirstSpectrum = false;
-        } while (fgets(chunk, CHUNK, f));
+      if(strstr(chunk, "MS:1000768")!=NULL){
+        bThermoFile = true;
       }
-      lOffset = ftell(f);  // position of file pointer before fgets in loop
+
+      char* pSpectrum = strstr(chunk, "<spectrum ");
+      if(pSpectrum!=NULL){
+        ptrdiff_t iSpectrumInLine = pSpectrum - chunk;
+        string sTag = pSpectrum;
+
+        while(sTag.find('>')==string::npos){
+          if(fgets(chunk, CHUNK, f)==NULL) break;
+          if(strstr(chunk, "MS:1000768")!=NULL){
+            bThermoFile = true;
+          }
+          sTag += chunk;
+        }
+
+        if(sTag.find('>')==string::npos){
+          break;
+        }
+
+        AppendGeneratedSpectrumIndex(sTag,
+                                     lLineOffset + (f_off)iSpectrumInLine,
+                                     bThermoFile,
+                                     m_scanIDXCount,
+                                     m_vIndex,
+                                     m_mIndex,
+                                     m_bIndexSorted);
+      }
     }
+
+    fclose(f);
   } else {
-    readBytes = gzObj.extract(fptr, gzObj.getfilesize()-200, (unsigned char*)chunk, CHUNK);
+    string sCarry;
+    f_off lChunkOffset = 0;
+    while((readBytes = gzObj.extract(fptr, lChunkOffset, (unsigned char*)chunk, CHUNK))>0){
+      string sData = sCarry;
+      sData.append(chunk, readBytes);
+
+      if(sData.find("MS:1000768")!=string::npos){
+        bThermoFile = true;
+      }
+
+      f_off lBaseOffset = lChunkOffset - (f_off)sCarry.size();
+      size_t iPos = 0;
+      while(true){
+        size_t iSpectrum = sData.find("<spectrum ", iPos);
+        if(iSpectrum==string::npos) break;
+
+        size_t iTagEnd = sData.find('>', iSpectrum);
+        if(iTagEnd==string::npos) break;
+
+        string sTag = sData.substr(iSpectrum, iTagEnd-iSpectrum+1);
+        AppendGeneratedSpectrumIndex(sTag,
+                                     lBaseOffset + (f_off)iSpectrum,
+                                     bThermoFile,
+                                     m_scanIDXCount,
+                                     m_vIndex,
+                                     m_mIndex,
+                                     m_bIndexSorted);
+        iPos = iTagEnd+1;
+      }
+
+      size_t iCarryStart = sData.find_last_of('<');
+      if(iCarryStart==string::npos || iCarryStart<iPos){
+        if(iPos<sData.size()) sCarry = sData.substr(iPos);
+        else sCarry.clear();
+      } else {
+        sCarry = sData.substr(iCarryStart);
+      }
+
+      size_t iMaxCarry = (size_t)(4*CHUNK);
+      if(sCarry.size()>iMaxCarry){
+        sCarry = sCarry.substr(sCarry.size()-iMaxCarry);
+      }
+
+      lChunkOffset += readBytes;
+    }
+  }
+
+  if(m_vIndex.size()==0){
+    cout << "Cannot generate spectrum index for file " << m_strFileName << endl;
+    return false;
+  }
+
+  if(!m_bIndexSorted){
+    sort(m_vIndex.begin(),m_vIndex.end(),cindex::compare);
+    m_bIndexSorted=true;
   }
 
   return true;

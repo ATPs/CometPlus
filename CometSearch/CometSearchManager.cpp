@@ -123,16 +123,37 @@ static std::string GetHostName()
    return {};
 }
 
-static bool IsMgfGzPath(const char *pszFileName)
+static bool TryGetSpectrumGzTempSuffix(const char *pszFileName, std::string& sSuffix)
 {
+   sSuffix.clear();
    if (pszFileName == NULL)
       return false;
 
    int iLen = (int)strlen(pszFileName);
-   if (iLen < 7)
-      return false;
+   if (iLen >= 7
+         && !STRCMP_IGNORE_CASE(pszFileName + iLen - 7, ".mgf.gz"))
+   {
+      sSuffix = ".mgf";
+      return true;
+   }
 
-   return !STRCMP_IGNORE_CASE(pszFileName + iLen - 7, ".mgf.gz");
+   if (iLen >= 8
+         && !STRCMP_IGNORE_CASE(pszFileName + iLen - 8, ".mzML.gz"))
+   {
+      sSuffix = ".mzML";
+      return true;
+   }
+
+   if (iLen >= 9
+         && !STRCMP_IGNORE_CASE(pszFileName + iLen - 9, ".mzXML.gz"))
+   {
+      sSuffix = ".mzXML";
+      return true;
+   }
+
+   if (iLen < 1)
+      return false;
+   return false;
 }
 
 static std::string GetOutputDirFromBaseName(const char *pszBaseName)
@@ -150,19 +171,26 @@ static std::string GetOutputDirFromBaseName(const char *pszBaseName)
    return sBaseName.substr(0, iPos);
 }
 
-static bool CreateTempMgfFromGz(const std::string& sGzPath,
-                                const std::string& sOutputDir,
-                                std::string& sTempMgfPath,
-                                std::string& sErrorMsg)
+static bool CreateTempSpectrumFromGz(const std::string& sGzPath,
+                                     const std::string& sOutputDir,
+                                     const std::string& sTempSuffix,
+                                     std::string& sTempSpectrumPath,
+                                     std::string& sErrorMsg)
 {
-   sTempMgfPath.clear();
+   sTempSpectrumPath.clear();
    sErrorMsg.clear();
+
+   if (sTempSuffix.empty())
+   {
+      sErrorMsg = " Error - invalid temporary spectrum suffix.\n";
+      return false;
+   }
 
    std::string sTemplatePath = sOutputDir;
 #ifdef _WIN32
-   sTemplatePath += "\\.cometplus_mgfgz_XXXXXX.mgf";
+   sTemplatePath += "\\.cometplus_specgz_XXXXXX" + sTempSuffix;
 #else
-   sTemplatePath += "/.cometplus_mgfgz_XXXXXX.mgf";
+   sTemplatePath += "/.cometplus_specgz_XXXXXX" + sTempSuffix;
 #endif
 
    FILE* fpCheck = fopen(sGzPath.c_str(), "rb");
@@ -195,7 +223,7 @@ static bool CreateTempMgfFromGz(const std::string& sGzPath,
    if (err != 0)
    {
       gzclose(gzInput);
-      sErrorMsg = " Error - cannot create temporary mgf path in \"" + sOutputDir + "\".\n";
+      sErrorMsg = " Error - cannot create temporary spectrum path in \"" + sOutputDir + "\".\n";
       return false;
    }
 
@@ -203,18 +231,18 @@ static bool CreateTempMgfFromGz(const std::string& sGzPath,
    if (fpOutput == NULL)
    {
       gzclose(gzInput);
-      sErrorMsg = " Error - cannot write temporary mgf file \"" + std::string(vPathBuf.data()) + "\".\n";
+      sErrorMsg = " Error - cannot write temporary spectrum file \"" + std::string(vPathBuf.data()) + "\".\n";
       return false;
    }
-   sTempMgfPath = vPathBuf.data();
+   sTempSpectrumPath = vPathBuf.data();
 #else
    std::vector<char> vPathBuf(sTemplatePath.begin(), sTemplatePath.end());
    vPathBuf.push_back('\0');
-   int iFd = mkstemps(vPathBuf.data(), 4); // keep ".mgf" suffix
+   int iFd = mkstemps(vPathBuf.data(), (int)sTempSuffix.size()); // keep target suffix
    if (iFd == -1)
    {
       gzclose(gzInput);
-      sErrorMsg = " Error - cannot create temporary mgf path in \"" + sOutputDir + "\".\n";
+      sErrorMsg = " Error - cannot create temporary spectrum path in \"" + sOutputDir + "\".\n";
       return false;
    }
 
@@ -224,10 +252,10 @@ static bool CreateTempMgfFromGz(const std::string& sGzPath,
       close(iFd);
       remove(vPathBuf.data());
       gzclose(gzInput);
-      sErrorMsg = " Error - cannot write temporary mgf file \"" + std::string(vPathBuf.data()) + "\".\n";
+      sErrorMsg = " Error - cannot write temporary spectrum file \"" + std::string(vPathBuf.data()) + "\".\n";
       return false;
    }
-   sTempMgfPath = vPathBuf.data();
+   sTempSpectrumPath = vPathBuf.data();
 #endif
 
    std::vector<unsigned char> vBuffer(1 << 20);
@@ -241,9 +269,9 @@ static bool CreateTempMgfFromGz(const std::string& sGzPath,
          {
             fclose(fpOutput);
             gzclose(gzInput);
-            remove(sTempMgfPath.c_str());
-            sTempMgfPath.clear();
-            sErrorMsg = " Error - failed writing temporary mgf file.\n";
+            remove(sTempSpectrumPath.c_str());
+            sTempSpectrumPath.clear();
+            sErrorMsg = " Error - failed writing temporary spectrum file.\n";
             return false;
          }
       }
@@ -257,8 +285,8 @@ static bool CreateTempMgfFromGz(const std::string& sGzPath,
          const char* pszZErr = gzerror(gzInput, &iZErr);
          fclose(fpOutput);
          gzclose(gzInput);
-         remove(sTempMgfPath.c_str());
-         sTempMgfPath.clear();
+         remove(sTempSpectrumPath.c_str());
+         sTempSpectrumPath.clear();
          sErrorMsg = " Error - failed while inflating gzip input \"" + sGzPath + "\"";
          if (pszZErr != NULL && iZErr != Z_OK)
             sErrorMsg += ": " + std::string(pszZErr);
@@ -287,7 +315,8 @@ static bool GetSpectrumReadPath(const char *pszInputPath,
 
    sReadPath = pszInputPath;
 
-   if (!IsMgfGzPath(pszInputPath))
+   std::string sTempSuffix;
+   if (!TryGetSpectrumGzTempSuffix(pszInputPath, sTempSuffix))
       return true;
 
    auto it = mapMgfGzTempFiles.find(sReadPath);
@@ -297,13 +326,17 @@ static bool GetSpectrumReadPath(const char *pszInputPath,
       return true;
    }
 
-   std::string sTempMgfPath;
-   if (!CreateTempMgfFromGz(sReadPath, GetOutputDirFromBaseName(pszBaseName), sTempMgfPath, sErrorMsg))
+   std::string sTempSpectrumPath;
+   if (!CreateTempSpectrumFromGz(sReadPath,
+                                 GetOutputDirFromBaseName(pszBaseName),
+                                 sTempSuffix,
+                                 sTempSpectrumPath,
+                                 sErrorMsg))
       return false;
 
-   mapMgfGzTempFiles[sReadPath] = sTempMgfPath;
-   vCleanupFiles.push_back(sTempMgfPath);
-   sReadPath = sTempMgfPath;
+   mapMgfGzTempFiles[sReadPath] = sTempSpectrumPath;
+   vCleanupFiles.push_back(sTempSpectrumPath);
+   sReadPath = sTempSpectrumPath;
    return true;
 }
 
@@ -2591,7 +2624,7 @@ bool CometSearchManager::DoSearch()
             {
                if (sSpectrumReadPath.size() >= SIZE_FILE)
                {
-                  string strErrorMsg = " Error - temporary mgf path exceeds internal path size limit.\n";
+                  string strErrorMsg = " Error - temporary spectrum path exceeds internal path size limit.\n";
                   g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
                   logerr(strErrorMsg);
                   bSucceeded = false;
@@ -3162,7 +3195,7 @@ bool CometSearchManager::DoSearch()
             {
                if (sSpectrumReadPath.size() >= SIZE_FILE)
                {
-                  string strErrorMsg = " Error - temporary mgf path exceeds internal path size limit.\n";
+                  string strErrorMsg = " Error - temporary spectrum path exceeds internal path size limit.\n";
                   g_cometStatus.SetStatus(CometResult_Failed, strErrorMsg);
                   logerr(strErrorMsg);
                   bSucceeded = false;
