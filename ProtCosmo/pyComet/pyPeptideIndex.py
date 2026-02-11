@@ -18,10 +18,58 @@ sys.path.append(os.path.dirname(__file__))
 
 from utils.peptide_index_tables import build_tables
 from utils.pyLoadParameters import parse_comet_params
+from utils.unimod_matcher import resolve_params_unimod_ids
 
 
 class CometHelpFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawTextHelpFormatter):
     pass
+
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_DEFAULT_UNIMOD_PATH = os.path.join(_SCRIPT_DIR, "resource", "common_unimod.csv")
+
+
+def _normalize_unimod_arg(unimod_path: Optional[str]) -> Optional[str]:
+    if unimod_path is None:
+        return None
+    value = unimod_path.strip()
+    if not value:
+        return None
+    if value.lower() == "none":
+        return None
+    return os.path.expanduser(value)
+
+
+def _resolve_unimod_maps(
+    params,
+    unimod_path: Optional[str],
+    unimod_ppm: float,
+    strict: bool = True,
+) -> Tuple[Optional[Dict[int, str]], Optional[Dict[str, str]]]:
+    normalized_unimod_path = _normalize_unimod_arg(unimod_path)
+    if normalized_unimod_path is None:
+        print("cannot match unimod: --unimod is None; continue normally.", file=sys.stderr)
+        return None, None
+    if not os.path.isfile(normalized_unimod_path):
+        print(
+            f"cannot match unimod: file does not exist: {normalized_unimod_path}; continue normally.",
+            file=sys.stderr,
+        )
+        return None, None
+
+    resolution = resolve_params_unimod_ids(params, normalized_unimod_path, unimod_ppm)
+    if resolution.missing:
+        print(
+            f"cannot match unimod: {len(resolution.missing)} active modification(s) were not matched:",
+            file=sys.stderr,
+        )
+        for missing in resolution.missing:
+            print(f"  - {missing.to_message()}", file=sys.stderr)
+        if strict:
+            raise SystemExit(1)
+        return None, None
+
+    return resolution.variable_mod_to_unimod, resolution.fixed_mod_to_unimod
 
 
 def generate_peptide_index_tables(
@@ -32,8 +80,17 @@ def generate_peptide_index_tables(
     progress: bool = False,
     use_protein_name: bool = False,
     threads: int = 1,
+    unimod_path: Optional[str] = _DEFAULT_UNIMOD_PATH,
+    unimod_ppm: float = 10.0,
+    strict_unimod: bool = True,
 ) -> Tuple[Dict[str, List[Tuple]], Tuple]:
     params = parse_comet_params(params_path)
+    unimod_variable_map, unimod_fixed_map = _resolve_unimod_maps(
+        params,
+        unimod_path,
+        unimod_ppm,
+        strict=strict_unimod,
+    )
     tables = build_tables(
         params,
         fasta_paths=fasta_paths,
@@ -42,6 +99,8 @@ def generate_peptide_index_tables(
         progress=progress,
         use_protein_name=use_protein_name,
         threads=threads,
+        unimod_variable_map=unimod_variable_map,
+        unimod_fixed_map=unimod_fixed_map,
     )
     run_id = 1
     created_at = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
@@ -71,8 +130,15 @@ def format_field(value: Optional[object], round_floats: bool = True) -> str:
     return str(value)
 
 
-def write_tsv(path: str, rows: List[Tuple], round_floats: bool = True) -> None:
+def write_tsv(
+    path: str,
+    rows: List[Tuple],
+    round_floats: bool = True,
+    header: Optional[List[str]] = None,
+) -> None:
     with open(path, "w", encoding="utf-8", newline="") as handle:
+        if header:
+            handle.write("#" + "\t".join(header) + "\n")
         for row in rows:
             handle.write(
                 "\t".join(format_field(value, round_floats=round_floats) for value in row) + "\n"
@@ -97,6 +163,7 @@ def main() -> None:
         "  clip_nterm_methionine     1=allow peptides starting at position 2 if protein starts with M\n"
         "  mass_type_parent          1=mono (default), 0=average\n"
         "  add_* / add_Nterm_*        static mods\n"
+        "  --unimod / --unimod-ppm    map active Comet mods to UniMod IDs\n"
         "  --thread                 worker process count for variant enumeration (0=all CPUs)\n"
         "  variable_modNN            <mass> <residues> <binary> <min|max> <term_dist> <which_term> <required> <neutral_loss>\n"
         "                           - binary=1 enforces at most one site per peptide\n"
@@ -106,7 +173,7 @@ def main() -> None:
         "  python pyPeptideIndex.py -P comet.params -D db.fasta -N out/comet\n"
         "  python pyPeptideIndex.py -P comet.params --protein ACDEFGHIK -N out/comet\n"
         "  python pyPeptideIndex.py -P comet.params -D db.fasta -N out/comet --thread 8\n\n"
-        "Outputs (TSV, no headers):\n"
+        "Outputs (TSV with a single '#' header row):\n"
         "  <prefix>.index_run.tsv\n"
         "  <prefix>.static_mod.tsv\n"
         "  <prefix>.variable_mod.tsv\n"
@@ -184,11 +251,35 @@ def main() -> None:
             "Use 1 to disable multiprocessing; 0 uses all detected CPUs."
         ),
     )
+    parser.add_argument(
+        "--unimod",
+        default=_DEFAULT_UNIMOD_PATH,
+        help=(
+            "UniMod CSV mapping file. Use 'None' to disable UniMod matching.\n"
+            "If missing/None, the run continues without UniMod IDs.\n"
+            "If present but active mods are unmatched, the run exits before indexing."
+        ),
+    )
+    parser.add_argument(
+        "--unimod-ppm",
+        type=float,
+        default=10.0,
+        help="PPM tolerance used to match Comet modifications to UniMod entries.",
+    )
     args = parser.parse_args()
     if args.thread < 0:
         parser.error("--thread must be >= 0")
+    if args.unimod_ppm < 0.0:
+        parser.error("--unimod-ppm must be >= 0")
 
     params = parse_comet_params(args.params)
+    unimod_variable_map, unimod_fixed_map = _resolve_unimod_maps(
+        params,
+        args.unimod,
+        args.unimod_ppm,
+        strict=True,
+    )
+
     fasta_paths: List[str] = []
     protein_sequences: List[str] = []
     if args.database:
@@ -219,6 +310,8 @@ def main() -> None:
         progress=True,
         use_protein_name=args.use_protein_name,
         threads=args.thread,
+        unimod_variable_map=unimod_variable_map,
+        unimod_fixed_map=unimod_fixed_map,
     )
 
     run_id = 1
@@ -237,35 +330,85 @@ def main() -> None:
         params.to_json(),
     )
 
-    write_tsv(f"{args.prefix}.index_run.tsv", [index_run_row])
+    write_tsv(
+        f"{args.prefix}.index_run.tsv",
+        [index_run_row],
+        header=[
+            "run_id",
+            "comet_version",
+            "params_path",
+            "database_label",
+            "digest_mass_min",
+            "digest_mass_max",
+            "peptide_len_min",
+            "peptide_len_max",
+            "created_at_utc",
+            "params_json",
+        ],
+    )
     write_tsv(
         f"{args.prefix}.static_mod.tsv",
         [(run_id, *row) for row in tables["static_mod"]],
+        header=["run_id", "residue", "delta_mass", "site", "unimod_id"],
     )
     write_tsv(
         f"{args.prefix}.variable_mod.tsv",
         [(run_id, *row) for row in tables["variable_mod"]],
+        header=[
+            "run_id",
+            "mod_index",
+            "residues",
+            "delta_mass",
+            "binary_mod",
+            "min_per_pep",
+            "max_per_pep",
+            "term_distance",
+            "which_term",
+            "require_this_mod",
+            "neutral_loss1",
+            "neutral_loss2",
+            "unimod_id",
+        ],
     )
     write_tsv(
         f"{args.prefix}.protein.tsv",
         [(run_id, *row) for row in tables["protein"]],
+        header=["run_id", "protein_id", "fasta_offset", "header"],
     )
     write_tsv(
         f"{args.prefix}.peptide_sequence.tsv",
         [(run_id, *row) for row in tables["peptide_sequence"]],
+        header=["run_id", "peptide_sequence_id", "sequence", "length", "primary_protein_id"],
     )
     write_tsv(
         f"{args.prefix}.peptide_sequence_protein.tsv",
         [(run_id, *row) for row in tables["peptide_sequence_protein"]],
+        header=["run_id", "peptide_sequence_id", "protein_id"],
     )
     write_tsv(
         f"{args.prefix}.peptide_variant.tsv",
         [(run_id, *row) for row in tables["peptide_variant"]],
         round_floats=False,
+        header=[
+            "run_id",
+            "variant_id",
+            "peptide_sequence_id",
+            "mh_plus",
+            "prev_aa",
+            "next_aa",
+            "var_mod_sites",
+            "var_mod_sites_unimod",
+            "var_mod_count",
+            "fixed_mod_sites",
+            "fixed_mod_sites_unimod",
+            "fixed_mod_count",
+            "mass_bin10",
+        ],
     )
     write_tsv(
         f"{args.prefix}.peptide_variant_mod.tsv",
         [(run_id, *row) for row in tables["peptide_variant_mod"]],
+        header=["run_id", "variant_id", "position", "mod_index", "unimod_id"],
     )
 
 

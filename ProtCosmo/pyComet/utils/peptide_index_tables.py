@@ -35,6 +35,8 @@ def build_tables(
     progress_every: int = 1000,
     use_protein_name: bool = False,
     threads: int = 1,
+    unimod_variable_map: Optional[Dict[int, str]] = None,
+    unimod_fixed_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, List[Tuple]]:
     thread_count = resolve_thread_count(threads)
     residue_mods, term_mods = get_static_mods(params)
@@ -234,20 +236,56 @@ def build_tables(
                 mod.require_this_mod,
                 mod.neutral_loss1,
                 mod.neutral_loss2,
+                unimod_variable_map.get(mod.index) if unimod_variable_map is not None else None,
             )
         )
 
     static_mod_rows: List[Tuple] = []
     for residue, delta in sorted(residue_mods.items()):
-        static_mod_rows.append((residue, delta, "residue"))
+        static_mod_rows.append(
+            (
+                residue,
+                delta,
+                "residue",
+                unimod_fixed_map.get(f"add_{residue}") if unimod_fixed_map is not None else None,
+            )
+        )
     if abs(term_mods["Nterm_peptide"]) > 1e-12:
-        static_mod_rows.append(("-", term_mods["Nterm_peptide"], "N-term"))
+        static_mod_rows.append(
+            (
+                "-",
+                term_mods["Nterm_peptide"],
+                "N-term",
+                unimod_fixed_map.get("add_Nterm_peptide") if unimod_fixed_map is not None else None,
+            )
+        )
     if abs(term_mods["Cterm_peptide"]) > 1e-12:
-        static_mod_rows.append(("-", term_mods["Cterm_peptide"], "C-term"))
+        static_mod_rows.append(
+            (
+                "-",
+                term_mods["Cterm_peptide"],
+                "C-term",
+                unimod_fixed_map.get("add_Cterm_peptide") if unimod_fixed_map is not None else None,
+            )
+        )
     if abs(term_mods["Nterm_protein"]) > 1e-12:
-        static_mod_rows.append(("-", term_mods["Nterm_protein"], "protein N-term"))
+        static_mod_rows.append(
+            (
+                "-",
+                term_mods["Nterm_protein"],
+                "protein N-term",
+                unimod_fixed_map.get("add_Nterm_protein") if unimod_fixed_map is not None else None,
+            )
+        )
     if abs(term_mods["Cterm_protein"]) > 1e-12:
-        static_mod_rows.append(("-", term_mods["Cterm_protein"], "protein C-term"))
+        static_mod_rows.append(
+            (
+                "-",
+                term_mods["Cterm_protein"],
+                "protein C-term",
+                unimod_fixed_map.get("add_Cterm_protein") if unimod_fixed_map is not None else None,
+            )
+        )
 
     sequence_tasks: List[SequenceTask] = []
     for seq in sequences:
@@ -293,6 +331,8 @@ def build_tables(
         require_var_mod=require_var_mod,
         min_mass=min_mass,
         max_mass=max_mass,
+        unimod_variable_map=unimod_variable_map,
+        unimod_fixed_map=unimod_fixed_map,
     )
 
     variant_task_rows: List[VariantTaskRow] = []
@@ -337,8 +377,10 @@ def build_tables(
         prev_aa,
         next_aa,
         sites_text,
+        sites_unimod_text,
         total_mods,
         fixed_sites_text,
+        fixed_sites_unimod_text,
         fixed_mod_count,
         mass_bin10,
         sites,
@@ -352,15 +394,26 @@ def build_tables(
                 prev_aa,
                 next_aa,
                 sites_text,
+                sites_unimod_text,
                 total_mods,
                 fixed_sites_text,
+                fixed_sites_unimod_text,
                 fixed_mod_count,
                 mass_bin10,
             )
         )
         for pos, mod_idx in enumerate(sites):
             if mod_idx:
-                peptide_variant_mod_rows.append((variant_id, pos, mod_idx))
+                peptide_variant_mod_rows.append(
+                    (
+                        variant_id,
+                        pos,
+                        mod_idx,
+                        unimod_variable_map.get(mod_idx)
+                        if unimod_variable_map is not None
+                        else None,
+                    )
+                )
 
     # Sort variants by mass then sequence for reproducibility
     peptide_variant_rows.sort(key=lambda row: (row[2], sequences[row[1] - 1], row[5]))

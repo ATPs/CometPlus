@@ -13,7 +13,20 @@ HYDROGEN_MONO = 1.00782503223
 OXYGEN_MONO = 15.99491461957
 
 SequenceTask = Tuple[int, str, int, int, str, str, int, int]
-VariantTaskRow = Tuple[int, float, str, str, str, int, str, int, int, List[int]]
+VariantTaskRow = Tuple[
+    int,
+    float,
+    str,
+    str,
+    str,
+    Optional[str],
+    int,
+    str,
+    Optional[str],
+    int,
+    int,
+    List[int],
+]
 
 
 @dataclass(frozen=True)
@@ -27,6 +40,8 @@ class VariantContext:
     require_var_mod: int
     min_mass: float
     max_mass: float
+    unimod_variable_map: Optional[Dict[int, str]]
+    unimod_fixed_map: Optional[Dict[str, str]]
 
 
 _VARIANT_WORKER_CONTEXT: Optional[VariantContext] = None
@@ -244,13 +259,28 @@ def format_var_mod_sites(sites: List[int]) -> str:
     return ";".join(pairs)
 
 
+def format_var_mod_sites_unimod(
+    sites: List[int],
+    unimod_variable_map: Optional[Dict[int, str]],
+) -> Optional[str]:
+    if unimod_variable_map is None:
+        return None
+    pairs = []
+    for pos, mod_idx in enumerate(sites):
+        if mod_idx:
+            unimod_id = unimod_variable_map.get(mod_idx)
+            if unimod_id is not None:
+                pairs.append(f"{pos}:{unimod_id}")
+    return ";".join(pairs)
+
+
 def format_fixed_mod_sites(
     seq: str,
     residue_mods: Dict[str, float],
     term_mods: Dict[str, float],
     is_protein_nterm: bool,
     is_protein_cterm: bool,
-) -> Tuple[str, int]:
+) -> Tuple[str, List[Tuple[int, str]], int]:
     mod_pairs: List[Tuple[int, str]] = []
     pep_len = len(seq)
 
@@ -270,7 +300,21 @@ def format_fixed_mod_sites(
 
     mod_pairs.sort(key=lambda pair: (pair[0], pair[1]))
     fixed_sites = ";".join(f"{pos}:{mod_name}" for pos, mod_name in mod_pairs)
-    return fixed_sites, len(mod_pairs)
+    return fixed_sites, mod_pairs, len(mod_pairs)
+
+
+def format_fixed_mod_sites_unimod(
+    fixed_mod_pairs: List[Tuple[int, str]],
+    unimod_fixed_map: Optional[Dict[str, str]],
+) -> Optional[str]:
+    if unimod_fixed_map is None:
+        return None
+    pairs = []
+    for pos, fixed_mod_key in fixed_mod_pairs:
+        unimod_id = unimod_fixed_map.get(fixed_mod_key)
+        if unimod_id is not None:
+            pairs.append(f"{pos}:{unimod_id}")
+    return ";".join(pairs)
 
 
 def compute_peptide_mass(
@@ -334,12 +378,16 @@ def enumerate_sequence_variants(
     if base_mass is None:
         return []
 
-    fixed_sites_text, fixed_mod_count = format_fixed_mod_sites(
+    fixed_sites_text, fixed_mod_pairs, fixed_mod_count = format_fixed_mod_sites(
         seq,
         context.residue_mods,
         context.term_mods,
         is_protein_nterm,
         is_protein_cterm,
+    )
+    fixed_sites_unimod_text = format_fixed_mod_sites_unimod(
+        fixed_mod_pairs,
+        context.unimod_fixed_map,
     )
 
     candidates = build_var_mod_candidates(
@@ -365,6 +413,7 @@ def enumerate_sequence_variants(
             continue
         mass_bin10 = int(mh_plus * 10.0)
         sites_text = format_var_mod_sites(sites)
+        sites_unimod_text = format_var_mod_sites_unimod(sites, context.unimod_variable_map)
         rows.append(
             (
                 seq_id,
@@ -372,8 +421,10 @@ def enumerate_sequence_variants(
                 prev_aa,
                 next_aa,
                 sites_text,
+                sites_unimod_text,
                 total_mods,
                 fixed_sites_text,
+                fixed_sites_unimod_text,
                 fixed_mod_count,
                 mass_bin10,
                 sites.copy(),
@@ -409,7 +460,9 @@ __all__ = [
     "build_var_mod_candidates",
     "enumerate_var_mods",
     "format_var_mod_sites",
+    "format_var_mod_sites_unimod",
     "format_fixed_mod_sites",
+    "format_fixed_mod_sites_unimod",
     "compute_peptide_mass",
     "resolve_thread_count",
     "enumerate_sequence_variants",
