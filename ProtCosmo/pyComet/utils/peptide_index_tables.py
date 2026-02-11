@@ -300,50 +300,58 @@ def build_tables(
         )
 
     static_mod_rows: List[Tuple] = []
+    static_mod_index_by_key: Dict[str, int] = {}
+    static_mod_unimod_by_index: Dict[int, Optional[str]] = {}
+    next_static_mod_index = 1
+
+    def add_static_mod(
+        mod_key: str,
+        residue: str,
+        delta_mass: float,
+        site: str,
+    ) -> None:
+        nonlocal next_static_mod_index
+        mod_index = next_static_mod_index
+        next_static_mod_index += 1
+        static_mod_index_by_key[mod_key] = mod_index
+        unimod_id = unimod_fixed_map.get(mod_key) if unimod_fixed_map is not None else None
+        static_mod_unimod_by_index[mod_index] = unimod_id
+        static_mod_rows.append((mod_index, residue, delta_mass, site, unimod_id))
+
     for residue, delta in sorted(residue_mods.items()):
-        static_mod_rows.append(
-            (
-                residue,
-                delta,
-                "residue",
-                unimod_fixed_map.get(f"add_{residue}") if unimod_fixed_map is not None else None,
-            )
+        add_static_mod(
+            mod_key=f"add_{residue}",
+            residue=residue,
+            delta_mass=delta,
+            site="residue",
         )
     if abs(term_mods["Nterm_peptide"]) > 1e-12:
-        static_mod_rows.append(
-            (
-                "-",
-                term_mods["Nterm_peptide"],
-                "N-term",
-                unimod_fixed_map.get("add_Nterm_peptide") if unimod_fixed_map is not None else None,
-            )
+        add_static_mod(
+            mod_key="add_Nterm_peptide",
+            residue="-",
+            delta_mass=term_mods["Nterm_peptide"],
+            site="N-term",
         )
     if abs(term_mods["Cterm_peptide"]) > 1e-12:
-        static_mod_rows.append(
-            (
-                "-",
-                term_mods["Cterm_peptide"],
-                "C-term",
-                unimod_fixed_map.get("add_Cterm_peptide") if unimod_fixed_map is not None else None,
-            )
+        add_static_mod(
+            mod_key="add_Cterm_peptide",
+            residue="-",
+            delta_mass=term_mods["Cterm_peptide"],
+            site="C-term",
         )
     if abs(term_mods["Nterm_protein"]) > 1e-12:
-        static_mod_rows.append(
-            (
-                "-",
-                term_mods["Nterm_protein"],
-                "protein N-term",
-                unimod_fixed_map.get("add_Nterm_protein") if unimod_fixed_map is not None else None,
-            )
+        add_static_mod(
+            mod_key="add_Nterm_protein",
+            residue="-",
+            delta_mass=term_mods["Nterm_protein"],
+            site="protein N-term",
         )
     if abs(term_mods["Cterm_protein"]) > 1e-12:
-        static_mod_rows.append(
-            (
-                "-",
-                term_mods["Cterm_protein"],
-                "protein C-term",
-                unimod_fixed_map.get("add_Cterm_protein") if unimod_fixed_map is not None else None,
-            )
+        add_static_mod(
+            mod_key="add_Cterm_protein",
+            residue="-",
+            delta_mass=term_mods["Cterm_protein"],
+            site="protein C-term",
         )
 
     sequence_tasks: List[SequenceTask] = []
@@ -481,6 +489,26 @@ def build_tables(
                         else None,
                     )
                 )
+        if fixed_sites_text:
+            for fixed_pair in fixed_sites_text.split(";"):
+                if not fixed_pair:
+                    continue
+                pos_text, mod_key = fixed_pair.split(":", 1)
+                static_mod_index = static_mod_index_by_key.get(mod_key)
+                if static_mod_index is None:
+                    raise RuntimeError(
+                        f"Missing static mod index mapping for fixed mod key '{mod_key}'."
+                    )
+                peptide_variant_mod_rows.append(
+                    (
+                        variant_id,
+                        int(pos_text),
+                        -static_mod_index,
+                        static_mod_unimod_by_index.get(static_mod_index),
+                    )
+                )
+
+    peptide_variant_mod_rows.sort(key=lambda row: (row[0], row[1], row[2]))
 
     # Sort variants by mass then sequence for reproducibility
     peptide_variant_rows.sort(key=lambda row: (row[3], row[2], row[6]))

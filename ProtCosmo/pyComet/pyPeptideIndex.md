@@ -70,10 +70,11 @@ One row describing the index build.
 **`<prefix>.static_mod.tsv`**
 Static modifications applied to all peptides.
 1. `run_id`
-2. `residue`: Single-letter residue or `-` for terminal mods.
-3. `delta_mass`: Mass delta applied.
-4. `site`: One of `residue`, `N-term`, `C-term`, `protein N-term`, `protein C-term`.
-5. `unimod_id`: Numeric UniMod ID (no `UNIMOD:` prefix), or null when UniMod matching is not active.
+2. `mod_index`: 1-based static modification index.
+3. `residue`: Single-letter residue or `-` for terminal mods.
+4. `delta_mass`: Mass delta applied.
+5. `site`: One of `residue`, `N-term`, `C-term`, `protein N-term`, `protein C-term`.
+6. `unimod_id`: Numeric UniMod ID (no `UNIMOD:` prefix), or null when UniMod matching is not active.
 
 **`<prefix>.variable_mod.tsv`**
 Variable modification definitions.
@@ -149,7 +150,7 @@ One row per modified site in each variant.
 1. `run_id`
 2. `variant_id`
 3. `position`: Same encoding as `var_mod_sites` (0-based residue, N-term `len`, C-term `len+1`).
-4. `mod_index`: 1-based variable mod index.
+4. `mod_index`: Signed modification index. Positive values map to `variable_mod.mod_index`; negative values map to static mods where `abs(mod_index)` joins to `static_mod.mod_index`.
 5. `unimod_id`: Numeric UniMod ID (no `UNIMOD:` prefix), or null when UniMod matching is not active.
 
 **Notes and Practical Usage**

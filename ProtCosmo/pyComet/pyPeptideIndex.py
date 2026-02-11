@@ -350,7 +350,7 @@ def main() -> None:
     write_tsv(
         f"{args.prefix}.static_mod.tsv",
         [(run_id, *row) for row in tables["static_mod"]],
-        header=["run_id", "residue", "delta_mass", "site", "unimod_id"],
+        header=["run_id", "mod_index", "residue", "delta_mass", "site", "unimod_id"],
     )
     write_tsv(
         f"{args.prefix}.variable_mod.tsv",
