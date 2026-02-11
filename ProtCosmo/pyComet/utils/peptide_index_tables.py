@@ -4,6 +4,11 @@ from concurrent.futures import ProcessPoolExecutor
 import sys
 from typing import Dict, List, Optional, Tuple
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
+
 from .peptide_index_digestion import (
     iter_fasta,
     iter_peptides,
@@ -38,11 +43,14 @@ def build_tables(
     unimod_variable_map: Optional[Dict[int, str]] = None,
     unimod_fixed_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, List[Tuple]]:
+    _ = progress_every  # Backward compatibility: retained in signature, no periodic logging.
     thread_count = resolve_thread_count(threads)
     residue_mods, term_mods = get_static_mods(params)
     aa_masses, h2o_mass = build_aa_masses(bool(params.parsed.get("mass_type_parent", 1)))
     apply_set_masses(aa_masses, params)
     var_mods = sorted(params.variable_mods, key=lambda mod: mod.index)
+    stderr_isatty = getattr(sys.stderr, "isatty", lambda: False)()
+    use_tqdm = bool(progress and tqdm is not None and stderr_isatty)
 
     enzyme = params.enzymes["search"]
     enzyme2 = params.enzymes["search2"] if params.parsed.get("search_enzyme2_number", 0) else None
@@ -59,18 +67,20 @@ def build_tables(
     peptide_records = 0
 
     def progress_log(message: str) -> None:
-        if progress:
+        if progress and not use_tqdm:
             print(message, file=sys.stderr, flush=True)
 
     def record_peptide(
         pep_seq: str,
         abs_start: int,
         abs_end: int,
+        pr_start: int,
+        pr_end: int,
         prev_aa: str,
         next_aa: str,
         protein_len: int,
         nterm_offset: int,
-        protein_id: int,
+        protein_id,
         offset: int,
     ) -> None:
         nonlocal peptide_records
@@ -89,9 +99,11 @@ def build_tables(
                     protein_len,
                     nterm_offset,
                 ),
+                "locations": set(),
             }
             seq_info[pep_seq] = entry
         entry["protein_ids"].add(protein_id)
+        entry["locations"].add((protein_id, pr_start, pr_end))
         primary = entry["primary"]
         if offset < primary[0]:
             entry["primary"] = (
@@ -107,7 +119,23 @@ def build_tables(
 
     protein_count = 0
     max_proteins_label = f" (max {max_proteins})" if max_proteins else ""
-    progress_log(f"Index: starting protein digestion{max_proteins_label}")
+    digestion_bar = None
+    if progress:
+        if use_tqdm:
+            digestion_total = None
+            if protein_sequences:
+                digestion_total = len(protein_sequences)
+                if max_proteins is not None:
+                    digestion_total = min(digestion_total, max_proteins)
+            digestion_bar = tqdm(
+                total=digestion_total,
+                desc="Index: digest proteins",
+                unit="protein",
+                file=sys.stderr,
+                leave=False,
+            )
+        else:
+            progress_log(f"Index: starting protein digestion{max_proteins_label}")
     if protein_sequences:
         protein_iter = iter_protein_sequences(protein_sequences)
     else:
@@ -126,17 +154,22 @@ def build_tables(
         else:
             protein_id = protein_count
         seq = normalize_sequence(seq_raw)
-        protein_rows.append((protein_id, offset, header))
+        pr_seq = seq.replace("*", "")
+        protein_rows.append((protein_id, pr_seq, offset, header))
         if not seq:
+            if digestion_bar is not None:
+                digestion_bar.update(1)
             continue
         protein_starts_with_m = seq.startswith("M")
-        pos = 0
+        raw_pos = 0
+        pr_pos = 0
         for segment in seq.split("*"):
             segment_len = len(segment)
             if segment_len == 0:
-                pos += 1
+                raw_pos += 1
                 continue
-            segment_start = pos
+            segment_start = raw_pos
+            pr_segment_start = pr_pos
             for start, end in iter_peptides(
                 segment,
                 enzyme,
@@ -149,11 +182,15 @@ def build_tables(
                 pep_seq = segment[start : end + 1]
                 abs_start = segment_start + start
                 abs_end = segment_start + end
+                pr_start = pr_segment_start + start + 1
+                pr_end = pr_segment_start + end + 1
                 prev_aa, next_aa = peptide_flanks(seq, abs_start, abs_end)
                 record_peptide(
                     pep_seq,
                     abs_start,
                     abs_end,
+                    pr_start,
+                    pr_end,
                     prev_aa,
                     next_aa,
                     len(seq),
@@ -161,7 +198,8 @@ def build_tables(
                     protein_id,
                     offset,
                 )
-            pos += segment_len + 1
+            raw_pos += segment_len + 1
+            pr_pos += segment_len
 
         if clip_nterm_methionine and protein_starts_with_m and len(seq) > 1:
             clipped_seq = seq[1:]
@@ -181,11 +219,15 @@ def build_tables(
                     pep_seq = clipped_segment[start : end + 1]
                     abs_start = start + 1
                     abs_end = end + 1
+                    pr_start = start + 2
+                    pr_end = end + 2
                     _, next_aa = peptide_flanks(seq, abs_start, abs_end)
                     record_peptide(
                         pep_seq,
                         abs_start,
                         abs_end,
+                        pr_start,
+                        pr_end,
                         "-",
                         next_aa,
                         len(seq),
@@ -194,12 +236,11 @@ def build_tables(
                         offset,
                     )
 
-        if progress and protein_count % progress_every == 0:
-            progress_log(
-                f"Index: processed {protein_count} proteins; "
-                f"peptides seen {peptide_records}; unique sequences {len(seq_info)}"
-            )
+        if digestion_bar is not None:
+            digestion_bar.update(1)
 
+    if digestion_bar is not None:
+        digestion_bar.close()
     progress_log(
         f"Index: finished proteins {protein_count}; "
         f"peptides seen {peptide_records}; unique sequences {len(seq_info)}"
@@ -211,6 +252,7 @@ def build_tables(
 
     peptide_sequence_rows: List[Tuple] = []
     peptide_sequence_protein_rows: List[Tuple] = []
+    peptide_protein_location_rows: List[Tuple] = []
 
     for seq in sequences:
         entry = seq_info[seq]
@@ -219,6 +261,23 @@ def build_tables(
         peptide_sequence_rows.append((seq_id, seq, len(seq), primary_protein_id))
         for pid in sorted(entry["protein_ids"]):
             peptide_sequence_protein_rows.append((seq_id, pid))
+        for protein_id, pep_start, pep_end in entry["locations"]:
+            peptide_protein_location_rows.append((protein_id, seq_id, pep_start, pep_end, seq))
+
+    def _protein_id_sort_key(protein_id) -> Tuple[int, object]:
+        if isinstance(protein_id, int):
+            return (0, protein_id)
+        return (1, str(protein_id))
+
+    peptide_protein_location_rows.sort(
+        key=lambda row: (
+            _protein_id_sort_key(row[0]),
+            row[2],
+            row[3],
+            row[1],
+            row[4],
+        )
+    )
 
     # Variable mod table rows
     variable_mod_rows: List[Tuple] = []
@@ -319,8 +378,18 @@ def build_tables(
     variant_id = 0
 
     total_sequences = len(sequence_tasks)
+    variant_bar = None
     if total_sequences:
-        progress_log(f"Index: enumerating variants for {total_sequences} sequences")
+        if use_tqdm:
+            variant_bar = tqdm(
+                total=total_sequences,
+                desc="Index: enumerate variants",
+                unit="sequence",
+                file=sys.stderr,
+                leave=False,
+            )
+        else:
+            progress_log(f"Index: starting variant enumeration for {total_sequences} sequences")
     variant_context = VariantContext(
         aa_masses=aa_masses,
         h2o_mass=h2o_mass,
@@ -337,7 +406,6 @@ def build_tables(
 
     variant_task_rows: List[VariantTaskRow] = []
     if thread_count > 1 and total_sequences > 1:
-        progress_log(f"Index: using {thread_count} worker processes for variants")
         chunk_size = max(1, min(500, total_sequences // (thread_count * 8) or 1))
         futures = []
         with ProcessPoolExecutor(
@@ -349,27 +417,24 @@ def build_tables(
                 chunk = sequence_tasks[chunk_start : chunk_start + chunk_size]
                 futures.append((len(chunk), executor.submit(enumerate_variant_chunk, chunk)))
 
-            processed_sequences = 0
-            progress_next = progress_every
             for chunk_len, future in futures:
                 chunk_rows = future.result()
                 variant_task_rows.extend(chunk_rows)
-                processed_sequences += chunk_len
-                if progress and processed_sequences >= progress_next:
-                    progress_log(
-                        f"Index: variants for {processed_sequences}/{total_sequences} sequences; "
-                        f"variants {len(variant_task_rows)}"
-                    )
-                    while progress_next <= processed_sequences:
-                        progress_next += progress_every
+                if variant_bar is not None:
+                    variant_bar.update(chunk_len)
     else:
-        for seq_idx, task in enumerate(sequence_tasks, start=1):
+        for task in sequence_tasks:
             variant_task_rows.extend(enumerate_sequence_variants(task, variant_context))
-            if progress and seq_idx % progress_every == 0:
-                progress_log(
-                    f"Index: variants for {seq_idx}/{total_sequences} sequences; "
-                    f"variants {len(variant_task_rows)}"
-                )
+            if variant_bar is not None:
+                variant_bar.update(1)
+
+    if variant_bar is not None:
+        variant_bar.close()
+    if total_sequences:
+        progress_log(
+            f"Index: finished variant enumeration for {total_sequences} sequences; "
+            f"variants {len(variant_task_rows)}"
+        )
 
     for (
         seq_id,
@@ -386,10 +451,12 @@ def build_tables(
         sites,
     ) in variant_task_rows:
         variant_id += 1
+        pep_seq = sequences[seq_id - 1]
         peptide_variant_rows.append(
             (
                 variant_id,
                 seq_id,
+                pep_seq,
                 mh_plus,
                 prev_aa,
                 next_aa,
@@ -416,12 +483,13 @@ def build_tables(
                 )
 
     # Sort variants by mass then sequence for reproducibility
-    peptide_variant_rows.sort(key=lambda row: (row[2], sequences[row[1] - 1], row[5]))
+    peptide_variant_rows.sort(key=lambda row: (row[3], row[2], row[6]))
 
     return {
         "protein": protein_rows,
         "peptide_sequence": peptide_sequence_rows,
         "peptide_sequence_protein": peptide_sequence_protein_rows,
+        "peptide_protein_location": peptide_protein_location_rows,
         "peptide_variant": peptide_variant_rows,
         "peptide_variant_mod": peptide_variant_mod_rows,
         "static_mod": static_mod_rows,

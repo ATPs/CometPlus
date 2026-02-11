@@ -2,7 +2,7 @@
 This document explains how `pyPeptideIndex.py` works and describes every output file and column.
 
 **Overview**
-`pyPeptideIndex.py` builds a Comet-like peptide index from a FASTA database and a `comet.params` file. It digests protein sequences using Comet enzyme rules, enumerates variable modifications, computes peptide masses, and writes multiple TSV files. Each TSV now starts with one header line prefixed by `#`. It can also match active Comet modifications to UniMod IDs using `common_unimod.csv`. Progress is printed to stderr to help debug long runs.
+`pyPeptideIndex.py` builds a Comet-like peptide index from a FASTA database and a `comet.params` file. It digests protein sequences using Comet enzyme rules, enumerates variable modifications, computes peptide masses, and writes multiple TSV files. Each TSV now starts with one header line prefixed by `#`. It can also match active Comet modifications to UniMod IDs using `common_unimod.csv`. Progress is shown with `tqdm` bars when available on a TTY, with concise start/finish fallback logs otherwise.
 
 **How It Works (High Level)**
 1. Parse `comet.params` using `utils/pyLoadParameters.py`, following Comet parsing rules (comments at `#`, `variable_modNN` requires 8 fields, and `[COMET_ENZYME_INFO]` is parsed at EOF).
@@ -13,7 +13,7 @@ This document explains how `pyPeptideIndex.py` works and describes every output 
 6. Record unique peptide sequences across all proteins. The "primary" protein for a peptide is the earliest occurrence (smallest FASTA file offset).
 7. Compute base peptide mass (MH+) using `mass_type_parent` (mono or average), `set_` masses, static `add_` mods, and terminal static mods.
 8. Enumerate variable mods using `variable_modNN` rules, `max_variable_mods_in_peptide`, and `require_variable_mod`. Each variant is filtered by `digest_mass_range`. This step supports multiprocessing with `--thread`.
-9. Write TSV tables. Sorting is stable and reproducible (variants are sorted by mass, sequence, and mod sites).
+9. Write TSV tables. Sorting is stable and reproducible (variants are sorted by mass, `pep_seq`, and mod sites).
 
 **Command Line Options**
 1. `--params` / `-P`: Path to `comet.params`. Used for enzyme rules, digestion filters, and mods.
@@ -95,41 +95,54 @@ Variable modification definitions.
 Protein table from the input FASTA.
 1. `run_id`
 2. `protein_id`: 1-based ID assigned in input order, or the FASTA protein name if `--use-protein-name` is set.
-3. `fasta_offset`: Byte offset of the header line (`>`) in the FASTA file. Synthetic for `--protein`.
-4. `header`: FASTA header line without the leading `>`, with tabs/newlines normalized to spaces.
+3. `pr_seq`: Normalized protein sequence used by indexing (uppercase letters only, with `*` removed).
+4. `fasta_offset`: Byte offset of the header line (`>`) in the FASTA file. Synthetic for `--protein`.
+5. `header`: FASTA header line without the leading `>`, with tabs/newlines normalized to spaces.
 
 **`<prefix>.peptide_sequence.tsv`**
 Unique peptide sequences across all proteins.
 1. `run_id`
-2. `peptide_sequence_id`: 1-based ID, assigned after sorting sequences.
-3. `sequence`: Peptide sequence string.
+2. `peptide_id`: 1-based ID, assigned after sorting sequences.
+3. `pep_seq`: Peptide sequence string.
 4. `length`: Peptide length.
 5. `primary_protein_id`: Protein ID of the earliest occurrence (smallest offset). If `--use-protein-name` is set, this is the FASTA protein name.
 
 **`<prefix>.peptide_sequence_protein.tsv`**
 Many-to-many mapping between peptides and proteins.
 1. `run_id`
-2. `peptide_sequence_id`
+2. `peptide_id`
 3. `protein_id` (FASTA protein name if `--use-protein-name` is set)
+
+**`<prefix>.peptide_protein_location.tsv`**
+One row per peptide occurrence in a protein sequence.
+1. `protein_id`: Protein identifier from `protein.tsv` (`--use-protein-name` uses FASTA names).
+2. `peptide_id`: Peptide identifier from `peptide_sequence.tsv`.
+3. `pep_start`: 1-based inclusive start position in `pr_seq`.
+4. `pep_end`: 1-based inclusive end position in `pr_seq`.
+5. `pep_seq`: Peptide sequence string.
+   - Coordinates are relative to `pr_seq` (the protein sequence in `protein.tsv`, with `*` removed).
+   - `pr_seq[pep_start-1:pep_end]` returns `pep_seq`.
+   - If a peptide appears multiple times in one protein, each occurrence is a separate row.
 
 **`<prefix>.peptide_variant.tsv`**
 Each peptide sequence expanded into variable-modified variants.
 1. `run_id`
 2. `variant_id`: 1-based ID assigned during enumeration.
-3. `peptide_sequence_id`
-4. `mh_plus`: Calculated MH+ mass (includes static and variable mods).
-5. `prev_aa`: Residue before the peptide in the primary protein, or `-` if N-terminus or after `*`.
-6. `next_aa`: Residue after the peptide in the primary protein, or `-` if C-terminus or before `*`.
+3. `peptide_id`
+4. `pep_seq`: Peptide sequence string.
+5. `mh_plus`: Calculated MH+ mass (includes static and variable mods).
+6. `prev_aa`: Residue before the peptide in the primary protein, or `-` if N-terminus or after `*`.
+7. `next_aa`: Residue after the peptide in the primary protein, or `-` if C-terminus or before `*`.
    - If a peptide occurs in multiple contexts with different flanks, only one flank pair is stored.
    - The stored flanks come from the "primary" occurrence with the smallest FASTA file offset (earliest protein).
    - This matches Comet’s peptide index tie-breaker, which keeps flanks from the lowest protein index when duplicates exist.
-7. `var_mod_sites`: `pos:mod_index` pairs separated by `;`. `pos` is 0-based residue index. `pos=len(seq)` is peptide N-term, `pos=len(seq)+1` is peptide C-term.
-8. `var_mod_sites_unimod`: `pos:unimod_id` pairs separated by `;`, aligned with `var_mod_sites`.
-9. `var_mod_count`: Total number of variable mods in this variant.
-10. `fixed_mod_sites`: `pos:mod_name` pairs separated by `;`. `pos` uses the same encoding as `var_mod_sites`. `mod_name` uses Comet-style static keys such as `add_C`, `add_Nterm_peptide`, `add_Cterm_peptide`, `add_Nterm_protein`, `add_Cterm_protein`.
-11. `fixed_mod_sites_unimod`: `pos:unimod_id` pairs separated by `;`, aligned with `fixed_mod_sites`.
-12. `fixed_mod_count`: Total number of fixed-mod entries in `fixed_mod_sites` for the variant.
-13. `mass_bin10`: `int(mh_plus * 10.0)` for binning.
+8. `var_mod_sites`: `pos:mod_index` pairs separated by `;`. `pos` is 0-based residue index. `pos=len(seq)` is peptide N-term, `pos=len(seq)+1` is peptide C-term.
+9. `var_mod_sites_unimod`: `pos:unimod_id` pairs separated by `;`, aligned with `var_mod_sites`.
+10. `var_mod_count`: Total number of variable mods in this variant.
+11. `fixed_mod_sites`: `pos:mod_name` pairs separated by `;`. `pos` uses the same encoding as `var_mod_sites`. `mod_name` uses Comet-style static keys such as `add_C`, `add_Nterm_peptide`, `add_Cterm_peptide`, `add_Nterm_protein`, `add_Cterm_protein`.
+12. `fixed_mod_sites_unimod`: `pos:unimod_id` pairs separated by `;`, aligned with `fixed_mod_sites`.
+13. `fixed_mod_count`: Total number of fixed-mod entries in `fixed_mod_sites` for the variant.
+14. `mass_bin10`: `int(mh_plus * 10.0)` for binning.
 
 **`<prefix>.peptide_variant_mod.tsv`**
 One row per modified site in each variant.
@@ -143,7 +156,7 @@ One row per modified site in each variant.
 1. `require_variable_mod=1` removes unmodified variants entirely.
 2. Peptides containing residues with no mass (e.g., B, J, X, Z) are kept in `peptide_sequence.tsv` but produce no variants.
 3. Use `--max-record` for quick validation on large databases; output will be incomplete by design.
-4. Progress logs are printed every 1000 proteins and every 1000 sequences during variant enumeration.
+4. Progress uses `tqdm` bars when `tqdm` is installed and stderr is a TTY; otherwise, concise start/finish logs are printed per phase.
 5. `X` means unknown residue. In the current implementation `X` has mass `0.0`, so any peptide containing `X` is excluded from `peptide_variant.tsv` and `peptide_variant_mod.tsv` (no calculable mass), but the sequence still appears in `peptide_sequence.tsv` and `peptide_sequence_protein.tsv`.
 6. When `--use-protein-name` is set, the protein identifier columns become strings from the FASTA header (first token). Ensure those names are unique if you rely on `protein_id` as a key.
 7. `--thread` parallelizes only the peptide-variant enumeration phase; protein digestion remains single-process.

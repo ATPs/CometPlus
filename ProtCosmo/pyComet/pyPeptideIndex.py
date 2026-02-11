@@ -180,6 +180,7 @@ def main() -> None:
         "  <prefix>.protein.tsv\n"
         "  <prefix>.peptide_sequence.tsv\n"
         "  <prefix>.peptide_sequence_protein.tsv\n"
+        "  <prefix>.peptide_protein_location.tsv\n"
         "  <prefix>.peptide_variant.tsv\n"
         "  <prefix>.peptide_variant_mod.tsv\n"
     )
@@ -373,17 +374,22 @@ def main() -> None:
     write_tsv(
         f"{args.prefix}.protein.tsv",
         [(run_id, *row) for row in tables["protein"]],
-        header=["run_id", "protein_id", "fasta_offset", "header"],
+        header=["run_id", "protein_id", "pr_seq", "fasta_offset", "header"],
     )
     write_tsv(
         f"{args.prefix}.peptide_sequence.tsv",
         [(run_id, *row) for row in tables["peptide_sequence"]],
-        header=["run_id", "peptide_sequence_id", "sequence", "length", "primary_protein_id"],
+        header=["run_id", "peptide_id", "pep_seq", "length", "primary_protein_id"],
     )
     write_tsv(
         f"{args.prefix}.peptide_sequence_protein.tsv",
         [(run_id, *row) for row in tables["peptide_sequence_protein"]],
-        header=["run_id", "peptide_sequence_id", "protein_id"],
+        header=["run_id", "peptide_id", "protein_id"],
+    )
+    write_tsv(
+        f"{args.prefix}.peptide_protein_location.tsv",
+        tables["peptide_protein_location"],
+        header=["protein_id", "peptide_id", "pep_start", "pep_end", "pep_seq"],
     )
     write_tsv(
         f"{args.prefix}.peptide_variant.tsv",
@@ -392,7 +398,8 @@ def main() -> None:
         header=[
             "run_id",
             "variant_id",
-            "peptide_sequence_id",
+            "peptide_id",
+            "pep_seq",
             "mh_plus",
             "prev_aa",
             "next_aa",
