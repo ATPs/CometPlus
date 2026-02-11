@@ -21,53 +21,53 @@
 
 ## Unimod IDs hard-coded in Comet (mzIdentML mapping)
 These are the "common" Unimod IDs Comet will emit in mzIdentML when a mod mass and residue match its hard-coded rules (0.01 Da tolerance). (`CometWriteMzIdentML.cpp`)
-- UNIMOD:35 Oxidation (+15.9949) on DKNPFYRMCWHGUEILQSTV
-- UNIMOD:21 Phospho (+79.9663) on TSYDHCRK
-- UNIMOD:1 Acetyl (+42.0106) on nKCSTYHR
-- UNIMOD:3 Biotin (+226.0776) on nK
-- UNIMOD:4 Carbamidomethyl (+57.0215) on nCKHDESTYHM
-- UNIMOD:5 Carbamyl (+43.0058) on nKRCMSTY
-- UNIMOD:6 Carboxymethyl (+58.0055) on nCKWU
-- UNIMOD:7 Deamidated (+0.9840) on QNRF
-- UNIMOD:27 Glu->pyro-Glu (-18.0106) on E
-- UNIMOD:23 Dehydrated (-18.0106) on NQSTYDC
-- UNIMOD:28 Gln->pyro-Glu (-17.0265) on Q
-- UNIMOD:385 Ammonia-loss (-17.0265) on TSCN
-- UNIMOD:34 Methyl (+14.0157) on ncCHKNQRILEDST
-- UNIMOD:121 GG (+114.0429) on nKSTC
-- UNIMOD:122 Formyl (+27.9949) on nKST
-- UNIMOD:275 Nitrosyl (+28.9902) on C
-- UNIMOD:737 TMT6plex (+229.1629) on nKHST
-- UNIMOD:738 TMT2plex (+225.1558) on nKHST
-- UNIMOD:739 TMT (+224.1525) on nKHST
-- UNIMOD:2016 TMTpro 16plex (+304.2071) on nKHST
+- UNIMOD:35 Oxidation (+15.994915) on DKNPFYRMCWHGUEILQSTV
+- UNIMOD:21 Phospho (+79.966331) on TSYDHCRK
+- UNIMOD:1 Acetyl (+42.010565) on nKCSTYHR
+- UNIMOD:3 Biotin (+226.077598) on nK
+- UNIMOD:4 Carbamidomethyl (+57.021464) on nCKHDESTYHM
+- UNIMOD:5 Carbamyl (+43.005814) on nKRCMSTY
+- UNIMOD:6 Carboxymethyl (+58.005479) on nCKWU
+- UNIMOD:7 Deamidated (+0.984016) on QNRF
+- UNIMOD:27 Glu->pyro-Glu (-18.010565) on E
+- UNIMOD:23 Dehydrated (-18.010565) on NQSTYDC
+- UNIMOD:28 Gln->pyro-Glu (-17.026549) on Q
+- UNIMOD:385 Ammonia-loss (-17.026549) on TSCN
+- UNIMOD:34 Methyl (+14.01565) on ncCHKNQRILEDST
+- UNIMOD:121 GG (+114.042927) on nKSTC
+- UNIMOD:122 Formyl (+27.994915) on nKST
+- UNIMOD:275 Nitrosyl (+28.990164) on C
+- UNIMOD:737 TMT6plex (+229.162932) on nKHST
+- UNIMOD:738 TMT2plex (+225.155833) on nKHST
+- UNIMOD:739 TMT (+224.152478) on nKHST
+- UNIMOD:2016 TMTpro 16plex (+304.207146) on nKHST
 
 ## extra
-- UNIMOD:737 TMT10plex (+229.1629) on nKHST
-- UNIMOD:2016 TMTpro 18plex (+304.2071) on nKHST
-- UNIMOD:2017 TMTpro_zero (+295.1896) on nKHSTY
-- UNIMOD:2015 shTMT (+235.1767) on nK
-- UNIMOD:2050 shTMTpro (+313.2310) on nK
-- UNIMOD:2122 Label:13C(6)15N(2)+TMT6plex (+237.1771) on K
-- UNIMOD:2123 Label:13C(6)15N(2)+TMTpro (+312.2213) on K
-- UNIMOD:984 cysTMT (+299.1667) on C
-- UNIMOD:985 cysTMT6plex (+304.1772) on C
-- UNIMOD:1341 iodoTMT (+324.2161) on CDEHK
-- UNIMOD:1342 iodoTMT6plex (+329.2266) on CDEHK
-- UNIMOD:765 Met-loss (-131.0405) on nM
-- UNIMOD:766 Met-loss+Acetyl (-89.0299) on nM
+- UNIMOD:737 TMT10plex (+229.162932) on nKHST
+- UNIMOD:2016 TMTpro 18plex (+304.207146) on nKHST
+- UNIMOD:2017 TMTpro_zero (+295.189592) on nKHSTY
+- UNIMOD:2015 shTMT (+235.176741) on nK
+- UNIMOD:2050 shTMTpro (+313.231019) on nK
+- UNIMOD:2122 Label:13C(6)15N(2)+TMT6plex (+237.177131) on K
+- UNIMOD:2123 Label:13C(6)15N(2)+TMTpro (+312.221344) on K
+- UNIMOD:984 cysTMT (+299.166748) on C
+- UNIMOD:985 cysTMT6plex (+304.177202) on C
+- UNIMOD:1341 iodoTMT (+324.216141) on CDEHK
+- UNIMOD:1342 iodoTMT6plex (+329.226595) on CDEHK
+- UNIMOD:765 Met-loss (-131.040485) on nM
+- UNIMOD:766 Met-loss+Acetyl (-89.02992) on nM
 - UNIMOD:36 Dimethyl (+28.0313) on nKR
-- UNIMOD:37 Trimethyl (+42.0470) on nKR
-- UNIMOD:425 Dioxidation (+31.9898) on MCWY
-- UNIMOD:345 Trioxidation (+47.9847) on CWFY
-- UNIMOD:24 Propionamide (+71.0371) on nCK
-- UNIMOD:40 Sulfo (+79.9568) on STY
-- UNIMOD:41 Hex (+162.0528) on NST
-- UNIMOD:43 HexNAc (+203.0794) on NST
-- UNIMOD:214 iTRAQ4plex (+144.1021) on nK
-- UNIMOD:730 iTRAQ8plex (+304.2054) on nK
-- UNIMOD:731 iTRAQ8plex:13C(6)15N(2) (+304.1990) on nK
-- UNIMOD:747 Malonyl (+86.0004) on CSK
+- UNIMOD:37 Trimethyl (+42.04695) on nKR
+- UNIMOD:425 Dioxidation (+31.989829) on MCWY
+- UNIMOD:345 Trioxidation (+47.984744) on CWFY
+- UNIMOD:24 Propionamide (+71.037114) on nCK
+- UNIMOD:40 Sulfo (+79.956815) on STY
+- UNIMOD:41 Hex (+162.052824) on NST
+- UNIMOD:43 HexNAc (+203.079373) on NST
+- UNIMOD:214 iTRAQ4plex (+144.102063) on nK
+- UNIMOD:730 iTRAQ8plex (+304.20536) on nK
+- UNIMOD:731 iTRAQ8plex:13C(6)15N(2) (+304.19904) on nK
+- UNIMOD:747 Malonyl (+86.000394) on CSK
 
 
 
