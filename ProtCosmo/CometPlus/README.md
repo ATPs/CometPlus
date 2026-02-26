@@ -156,6 +156,118 @@ For `WITH_MZMLB=1` (mzMLb enabled), the same command should show `H5...` symbols
   /path/to/input.mgf
 ```
 
+## Novel Inputs and Scan Subset Options
+
+This section documents design and usage for:
+- `--novel_protein <file>`
+- `--novel_peptide <file>`
+- `--scan <file>`
+- `--scan_numbers <list>`
+
+These options are implemented as additive orchestration in CometPlus and preserve normal Comet behavior when not used.
+
+### Option Semantics
+
+- `--novel_protein <file>`
+  - Input must be FASTA.
+  - Proteins are digested with the active Comet settings.
+
+- `--novel_peptide <file>`
+  - Input supports either FASTA or tokenized text.
+  - FASTA mode is auto-detected if any non-empty trimmed line begins with `>`.
+  - Tokenized mode accepts delimiters: comma, space, tab, newline.
+
+- `--scan <file>`
+  - File-based explicit scan list.
+  - Tokens use the same delimiters as `--scan_numbers`.
+
+- `--scan_numbers <list>`
+  - Inline explicit scan list, for example: `1001,1002,1003`.
+
+### End-to-End Design Behavior
+
+When any novel option or explicit scan option is used, CometPlus runs this flow:
+
+1. Resolve known DB input from repeatable `--database` values (or `database_name` in params if CLI does not provide one).
+2. Parse known peptide universe for subtraction:
+   - known `.idx`: read directly, no rebuild and no mutation.
+   - known FASTA: temporary peptide index generation is used for extraction.
+3. Build novel peptide candidates from:
+   - `--novel_protein` (digested under current params), and/or
+   - `--novel_peptide` (FASTA or tokenized text).
+4. Normalize peptide identity for subtraction using `equal_I_and_L`:
+   - `equal_I_and_L=1`: `I` and `L` are equivalent.
+   - `equal_I_and_L=0`: `I` and `L` are distinct.
+5. Remove novel candidates already present in known DB(s).
+6. Materialize retained novel peptides as temporary scoring DB input and append to known DB list.
+7. Parse explicit scans from `--scan_numbers` and `--scan`, union and deduplicate.
+8. Intersect explicit scans with any scan-range constraint (`-F/-L` or `--first-scan/--last-scan`).
+9. Filter spectra into temporary MGF files:
+   - by explicit scan set if provided,
+   - and, in novel mode, by precursor-mass plausibility against retained novel peptide masses.
+10. Search only filtered spectra and write normal outputs.
+
+### Input Validation and Error Conditions
+
+- Scan tokens must be positive integers (`1..INT_MAX`); malformed or out-of-range tokens fail fast.
+- `--novel_peptide` with no parsed peptide entries fails fast.
+- `--novel_protein/--novel_peptide/--scan/--scan_numbers` cannot be used with index-creation modes `-i` or `-j`.
+- Novel mode requires a known database source (`--database` or `database_name` in params).
+- At least one spectrum input file is required when using novel/scan-subset options.
+
+### Usage Examples
+
+Only explicit scans from inline list:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known.fasta \
+  --scan_numbers 1001,1002,1003 \
+  /path/to/input.mzML
+```
+
+Explicit scans from file + scan-range intersection:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known.fasta \
+  --scan /path/to/scan_ids.txt \
+  --first-scan 2000 \
+  --last-scan 5000 \
+  /path/to/input.mgf
+```
+
+Novel peptide text with explicit scan subset:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known.idx \
+  --novel_peptide /path/to/novel_peptides.txt \
+  --scan_numbers 2104,2456,3001 \
+  /path/to/input.mzML.gz
+```
+
+Combined novel protein + novel peptide + dual scan sources:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known_target.idx \
+  --database /path/to/known_decoy.idx \
+  --novel_protein /path/to/novel_proteins.fasta \
+  --novel_peptide /path/to/novel_peptides.fasta \
+  --scan /path/to/scan_ids.txt \
+  --scan_numbers 3001,3002,3003 \
+  --first-scan 2500 \
+  --last-scan 6000 \
+  --name run_novel_scan_subset \
+  /path/to/input.mzMLb
+```
+
+### Related Design Docs
+
+- `ProtCosmo/CometPlus/design.novel_protein_peptide.md`
+- `ProtCosmo/CometPlus/design.multiple.input.db.md`
+
 ## Troubleshooting
 
 - `WITH_MZMLB=1 requires static HDF5 C++ library`:

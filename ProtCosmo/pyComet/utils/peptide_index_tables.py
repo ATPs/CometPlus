@@ -260,7 +260,7 @@ def build_tables(
         seq_id = seq_id_map[seq]
         peptide_sequence_rows.append((seq_id, seq, len(seq), primary_protein_id))
         for pid in sorted(entry["protein_ids"]):
-            peptide_sequence_protein_rows.append((seq_id, pid))
+            peptide_sequence_protein_rows.append((seq_id, pid, seq))
         for protein_id, pep_start, pep_end in entry["locations"]:
             peptide_protein_location_rows.append((protein_id, seq_id, pep_start, pep_end, seq))
 

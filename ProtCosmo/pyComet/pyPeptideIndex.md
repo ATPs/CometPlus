@@ -113,6 +113,7 @@ Many-to-many mapping between peptides and proteins.
 1. `run_id`
 2. `peptide_id`
 3. `protein_id` (FASTA protein name if `--use-protein-name` is set)
+4. `pep_seq`: Peptide sequence string.
 
 **`<prefix>.peptide_protein_location.tsv`**
 One row per peptide occurrence in a protein sequence.

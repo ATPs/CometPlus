@@ -384,7 +384,7 @@ def main() -> None:
     write_tsv(
         f"{args.prefix}.peptide_sequence_protein.tsv",
         [(run_id, *row) for row in tables["peptide_sequence_protein"]],
-        header=["run_id", "peptide_id", "protein_id"],
+        header=["run_id", "peptide_id", "protein_id", "pep_seq"],
     )
     write_tsv(
         f"{args.prefix}.peptide_protein_location.tsv",
