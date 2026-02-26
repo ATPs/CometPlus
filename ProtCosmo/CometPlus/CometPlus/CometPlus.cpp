@@ -144,14 +144,16 @@ void Usage(char *pszCmd)
    logout("                 --novel_peptide <file> novel peptide input (FASTA or tokenized text)\n");
    logout("                 --scan <file>          scan filter file; delimiters: comma/space/tab/newline\n");
    logout("                 --scan_numbers <list>  explicit scan list, e.g. 1001,1002,1003\n");
+   logout("                 note: novel mode requires known DB via --database or params database_name\n");
    logout("                 --thread <num>         override num_threads parameter\n");
    logout("                 -F<num>    to specify the first/start scan to search, overriding entry in parameters file\n");
    logout("                 --first-scan <num>     alias for -F<num>\n");
    logout("                 -L<num>    to specify the last/end scan to search, overriding entry in parameters file\n");
    logout("                 --last-scan <num>      alias for -L<num>\n");
-   logout("                            (-L option is required if -F option is used)\n");
+   logout("                            (-F/-L can be set independently; together define a closed range)\n");
    logout("                 -i         create .idx file for fragment ion indexing\n");
    logout("                 -j         create .idx file for peptide indexing\n");
+   logout("                 note: --novel_* and --scan* options are not supported with -i/-j\n");
    logout("\n");
    snprintf(szTmp, iSize, "       example:  %s file1.mzXML file2.mzXML\n", pszCmd);
    logout(szTmp);
@@ -163,9 +165,9 @@ void Usage(char *pszCmd)
    logout(szTmp);
    snprintf(szTmp, iSize, "            or   %s --database db.fasta file1.mzML.gz\n", pszCmd);
    logout(szTmp);
-   snprintf(szTmp, iSize, "            or   %s --novel_peptide novel.txt --scan_numbers 1001,1002 file1.mzML\n", pszCmd);
+   snprintf(szTmp, iSize, "            or   %s --database known.fasta --novel_peptide novel.txt --scan_numbers 1001,1002 file1.mzML\n", pszCmd);
    logout(szTmp);
-   snprintf(szTmp, iSize, "            or   %s --novel_protein novel.fasta --scan scan_ids.txt file1.mzML\n", pszCmd);
+   snprintf(szTmp, iSize, "            or   %s --database known.fasta --novel_protein novel.fasta --scan scan_ids.txt file1.mzML\n", pszCmd);
    logout(szTmp);
 
    logout("\n");
@@ -1897,4 +1899,3 @@ bool ValidateInputFile(char *pszInputFileName)
    fclose(fp);
    return true;
 }
-

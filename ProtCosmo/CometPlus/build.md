@@ -32,6 +32,12 @@ command -v /usr/bin/g++
 /usr/bin/g++ --version | head -n 1
 ```
 
+If `x86_64-conda-linux-gnu-gcc/g++` are not found in `PATH`, use:
+
+```bash
+export PATH=/data/p/anaconda3/bin:$PATH
+```
+
 Observed in this environment:
 
 - `x86_64-conda-linux-gnu-gcc (conda-forge gcc 13.2.0-13) 13.2.0`
@@ -228,7 +234,7 @@ Verify:
 ```bash
 ls -lh ProtCosmo/CometPlus/cometplus
 file ProtCosmo/CometPlus/cometplus
-ldd ProtCosmo/CometPlus/cometplus
+ldd ProtCosmo/CometPlus/cometplus || true
 nm -A ProtCosmo/CometPlus/cometplus 2>/dev/null | rg -i "\\bH5[A-Za-z0-9_]*\\b|hdf5" | head
 strings ProtCosmo/CometPlus/cometplus | rg -n "mzMLb|Supported input formats include"
 ```
@@ -238,6 +244,7 @@ Expected:
 - static binary (`statically linked`, `not a dynamic executable`)
 - `H5...` symbols present
 - `mzMLb` appears in strings/help text
+- typical size increase vs dynamic build in this environment: dynamic ~`8.7M`, static ~`16M`
 
 ## Smoke Validation Commands
 
