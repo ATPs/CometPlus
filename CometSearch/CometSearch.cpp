@@ -4898,6 +4898,7 @@ void CometSearch::StorePeptide(size_t iWhichQuery,
    int i;
    int iLenPeptide;
    int iLenPeptide2;
+   int iLenProteinMinus1 = (int)strlen(szProteinSeq) - 1;
    Query* pQuery = g_pvQuery.at(iWhichQuery);
 
    if (dXcorr < g_staticParams.options.dMinimumXcorr)
@@ -5011,7 +5012,7 @@ void CometSearch::StorePeptide(size_t iWhichQuery,
       else
          pQuery->_pDecoys[siLowestDecoyXcorrScoreIndex].cPrevAA = szProteinSeq[iStartPos - 1];
 
-      if (iEndPos == _proteinInfo.iTmpProteinSeqLength - 1)
+      if (iEndPos == iLenProteinMinus1)
          pQuery->_pDecoys[siLowestDecoyXcorrScoreIndex].cNextAA = '-';
       else
          pQuery->_pDecoys[siLowestDecoyXcorrScoreIndex].cNextAA = szProteinSeq[iEndPos + 1];
@@ -5209,7 +5210,7 @@ void CometSearch::StorePeptide(size_t iWhichQuery,
       else
          pQuery->_pResults[siLowestXcorrScoreIndex].cPrevAA = szProteinSeq[iStartPos - 1];
 
-      if (iEndPos == _proteinInfo.iTmpProteinSeqLength - 1)
+      if (iEndPos == iLenProteinMinus1)
          pQuery->_pResults[siLowestXcorrScoreIndex].cNextAA = '-';
       else
          pQuery->_pResults[siLowestXcorrScoreIndex].cNextAA = szProteinSeq[iEndPos + 1];
