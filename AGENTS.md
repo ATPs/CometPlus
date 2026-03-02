@@ -24,3 +24,8 @@ Recent commits use short, imperative summaries (e.g., â€œUpdate version stringâ€
 
 ## Dependencies & Configuration Notes
 Linux/macOS builds rely on C++14 and the bundled library subprojects. Windows builds require MSFileReader for RAW support and Visual Studio 2022 toolset v143.
+
+## python and conda env
+python path: /data/p/anaconda3/bin/python
+anaconda base folder: /data/p/anaconda3
+need to add to PATH: /data/p/bin/

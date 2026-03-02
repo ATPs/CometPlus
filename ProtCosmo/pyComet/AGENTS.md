@@ -19,3 +19,11 @@ Python utilities that mirror Comet behavior for prototyping and data prep. Keep 
 
 ## Testing
 No automated tests. Validate changes by running `pyPeptideIndex.py` on a small FASTA and a known `comet.params`, then sanity-check the generated TSVs. If you add tests, keep them adjacent to the module and document how to run them.
+
+# explanation
+every python file in ProtCosmo/pyComet but not inside the ProtCosmo/pyComet/utils folder is a relative independent module. write a .md file for each new module to explain how to use it.
+
+For each function, if the function is long and complex, add instructions to this function. like aim, input and output explanation.
+
+# ProtCosmo/pyComet/utils
+if a module to write will be too long or include functions that is highly re-usable, keep the file in ProtCosmo/pyComet/utils to be used by other modules or keep current module not too long.
