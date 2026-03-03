@@ -106,7 +106,16 @@ PARQUET_WRITE_KWARGS: Dict[str, object] = {
     "index": False,
 }
 
-SUPPORTED_FORMATS = (".pin", ".pin.gz", ".pin.parquet", ".pin.parquet.gz")
+SUPPORTED_OUTPUT_FORMATS = (
+    ".pin",
+    ".pin.gz",
+    ".pin.parquet",
+    ".pin.parquet.gz",
+    ".tsv",
+    ".tsv.gz",
+    ".parquet",
+    ".parquet.gz",
+)
 _INT_TOKEN_RE = re.compile(r"^[+-]?\d+$")
 _FLOAT_TOKEN_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -117,31 +126,43 @@ class ConversionError(Exception):
     """Raised when conversion cannot proceed."""
 
 
-def detect_format(path: str) -> str:
+def detect_output_format(path: str) -> str:
     lower = path.lower()
-    if lower.endswith(".pin.parquet.gz"):
+    if lower.endswith(".pin.parquet.gz") or lower.endswith(".parquet.gz"):
         return "parquet_gz"
-    if lower.endswith(".pin.parquet"):
+    if lower.endswith(".pin.parquet") or lower.endswith(".parquet"):
         return "parquet"
-    if lower.endswith(".pin.gz"):
+    if lower.endswith(".pin.gz") or lower.endswith(".tsv.gz"):
         return "pin_gz"
-    if lower.endswith(".pin"):
+    if lower.endswith(".pin") or lower.endswith(".tsv"):
         return "pin"
     raise ConversionError(
-        f"unsupported file extension for '{path}'. supported: {', '.join(SUPPORTED_FORMATS)}"
+        f"unsupported file extension for '{path}'. supported: {', '.join(SUPPORTED_OUTPUT_FORMATS)}"
     )
 
 
-def default_output_path(input_path: str) -> str:
-    input_format = detect_format(input_path)
+def detect_input_format(path: str, input_percolator: bool) -> str:
+    if input_percolator:
+        lower = path.lower()
+        if lower.endswith(".parquet.gz"):
+            return "parquet_gz"
+        if lower.endswith(".parquet"):
+            return "parquet"
+        if lower.endswith(".gz"):
+            return "percolator_tsv_gz"
+        return "percolator_tsv"
+    return detect_output_format(path)
+
+
+def default_output_path(input_path: str, input_format: str) -> str:
     if input_format in ("parquet", "parquet_gz"):
         raise ConversionError(
-            "--output is required when input is .pin.parquet or .pin.parquet.gz"
+            "--output is required when input is .parquet or .parquet.gz"
         )
-    if input_format == "pin_gz":
-        # x.pin.gz -> x.pin.parquet
+    if input_format in ("pin_gz", "percolator_tsv_gz"):
+        # x.<text>.gz -> x.<text>.parquet
         return input_path[: -len(".gz")] + ".parquet"
-    # x.pin -> x.pin.parquet
+    # x.<text> -> x.<text>.parquet
     return input_path + ".parquet"
 
 
@@ -165,14 +186,26 @@ def _normalize_proteins(parts: Sequence[object], proteins_keep: int) -> str:
         text = str(part).strip()
         if not text:
             continue
-        if "," in text:
-            values.extend(item.strip() for item in text.split(",") if item.strip())
-        else:
-            values.append(text)
+        split_items = re.split(r"[,;]", text)
+        values.extend(item.strip() for item in split_items if item.strip())
 
     if proteins_keep > 0:
         values = values[:proteins_keep]
     return ",".join(values)
+
+
+def _find_column_case_insensitive(
+    columns: Sequence[str],
+    candidate_names: Sequence[str],
+) -> Optional[str]:
+    lookup: Dict[str, str] = {}
+    for col in columns:
+        lookup[str(col).lower()] = str(col)
+    for name in candidate_names:
+        matched = lookup.get(name.lower())
+        if matched is not None:
+            return matched
+    return None
 
 
 def read_pin_text_rows(
@@ -227,6 +260,66 @@ def read_pin_text_rows(
                     warned_proteins_not_last = True
             row["Proteins"] = _normalize_proteins(proteins_raw, proteins_keep)
             row["Peptide"] = peptide_mapper(row.get("Peptide", ""))
+            rows.append(row)
+    return output_columns, rows
+
+
+def read_percolator_text_rows(
+    path: str,
+    is_gzip: bool,
+    proteins_keep: int,
+    peptide_mapper: Callable[[str], str],
+) -> Tuple[List[str], List[Dict[str, str]]]:
+    rows: List[Dict[str, str]] = []
+    with _open_text_reader(path, is_gzip) as handle:
+        header_line = handle.readline()
+        if not header_line:
+            raise ConversionError(f"input file is empty: {path}")
+        header = header_line.rstrip("\r\n").split("\t")
+        peptide_col = _find_column_case_insensitive(header, ("peptide", "Peptide"))
+        if peptide_col is None:
+            raise ConversionError(
+                f"invalid percolator header in {path}: missing required 'peptide' column"
+            )
+        protein_col = _find_column_case_insensitive(
+            header,
+            ("proteinIds", "proteinids", "Proteins", "proteins"),
+        )
+        if protein_col is None:
+            raise ConversionError(
+                f"invalid percolator header in {path}: missing required 'proteinIds' column"
+            )
+        output_columns = list(header)
+
+        warned_protein_not_last = False
+        protein_idx = header.index(protein_col)
+
+        for line in handle:
+            stripped = line.rstrip("\r\n")
+            if not stripped:
+                continue
+            parts = stripped.split("\t")
+            row: Dict[str, str] = {}
+            for idx, col in enumerate(header):
+                row[col] = parts[idx] if idx < len(parts) else ""
+            trailing = parts[len(header) :] if len(parts) > len(header) else []
+
+            proteins_raw: List[str] = []
+            proteins_raw.append(row.get(protein_col, ""))
+            if trailing:
+                proteins_raw.extend(trailing)
+            if protein_idx != len(header) - 1 and trailing:
+                if not warned_protein_not_last:
+                    print(
+                        "warning: 'proteinIds' is not the last header column but row has extra trailing fields; "
+                        "trailing fields are appended into proteinIds.",
+                        file=sys.stderr,
+                    )
+                    warned_protein_not_last = True
+            normalized_proteins = _normalize_proteins(proteins_raw, proteins_keep)
+            row[protein_col] = normalized_proteins
+
+            row[peptide_col] = peptide_mapper(row.get(peptide_col, ""))
             rows.append(row)
     return output_columns, rows
 
@@ -402,6 +495,48 @@ def _dataframe_to_pin_rows(df, columns: Sequence[str]) -> List[Dict[str, object]
     return rows
 
 
+def _load_unimod_entries_required(unimod_path: str):
+    if not os.path.isfile(unimod_path):
+        raise ConversionError(f"unimod file does not exist: {unimod_path}")
+    entries = load_unimod_entries_flexible(unimod_path)
+    if not entries:
+        raise ConversionError(
+            f"cannot load unimod entries from: {unimod_path}. expected first 3 columns: mass,residues,unimod_id"
+        )
+    return entries
+
+
+def _normalize_percolator_dataframe(
+    df,
+    proteins_keep: int,
+    peptide_mapper: Callable[[str], str],
+):
+    normalized = df.copy()
+    columns = [str(col) for col in normalized.columns]
+    peptide_col = _find_column_case_insensitive(columns, ("peptide", "Peptide"))
+    if peptide_col is None:
+        raise ConversionError(
+            "invalid percolator parquet input: missing required 'peptide' column"
+        )
+    protein_col = _find_column_case_insensitive(
+        columns,
+        ("proteinIds", "proteinids", "Proteins", "proteins"),
+    )
+    if protein_col is None:
+        raise ConversionError(
+            "invalid percolator parquet input: missing required 'proteinIds' column"
+        )
+
+    normalized[peptide_col] = normalized[peptide_col].map(
+        lambda value: peptide_mapper("" if _is_blank_like(value) else str(value))
+    )
+
+    normalized[protein_col] = normalized[protein_col].map(
+        lambda value: _normalize_proteins([value], proteins_keep)
+    )
+    return normalized
+
+
 def convert_peptide_string(
     peptide_text: str,
     unimod_path: str = _DEFAULT_UNIMOD_PATH,
@@ -416,13 +551,7 @@ def convert_peptide_string(
     """
     if unimod_ppm < 0.0:
         raise ConversionError("--unimod-ppm must be >= 0")
-    if not os.path.isfile(unimod_path):
-        raise ConversionError(f"unimod file does not exist: {unimod_path}")
-    entries = load_unimod_entries_flexible(unimod_path)
-    if not entries:
-        raise ConversionError(
-            f"cannot load unimod entries from: {unimod_path}. expected first 3 columns: mass,residues,unimod_id"
-        )
+    entries = _load_unimod_entries_required(unimod_path)
     sink = warning_sink if warning_sink is not None else WarningSink()
     return normalize_pin_peptide_to_unimod(peptide_text, entries, unimod_ppm, sink)
 
@@ -433,23 +562,62 @@ def convert_file(
     proteins_keep: int,
     unimod_path: str,
     unimod_ppm: float,
+    input_percolator: bool = False,
 ) -> None:
-    input_format = detect_format(input_path)
-    output_format = detect_format(output_path)
+    input_format = detect_input_format(input_path, input_percolator)
+    output_format = detect_output_format(output_path)
 
     if proteins_keep < 0:
         raise ConversionError("--proteins-keep must be >= 0")
     if unimod_ppm < 0.0:
         raise ConversionError("--unimod-ppm must be >= 0")
 
-    if input_format in ("pin", "pin_gz"):
-        if not os.path.isfile(unimod_path):
-            raise ConversionError(f"unimod file does not exist: {unimod_path}")
-        unimod_entries = load_unimod_entries_flexible(unimod_path)
-        if not unimod_entries:
-            raise ConversionError(
-                f"cannot load unimod entries from: {unimod_path}. expected first 3 columns: mass,residues,unimod_id"
+    if input_percolator:
+        unimod_entries = _load_unimod_entries_required(unimod_path)
+        warning_sink = WarningSink()
+        peptide_mapper = lambda peptide: normalize_pin_peptide_to_unimod(
+            peptide,
+            unimod_entries,
+            unimod_ppm,
+            warning_sink,
+        )
+
+        if input_format in ("percolator_tsv", "percolator_tsv_gz"):
+            columns, rows = read_percolator_text_rows(
+                path=input_path,
+                is_gzip=(input_format == "percolator_tsv_gz"),
+                proteins_keep=proteins_keep,
+                peptide_mapper=peptide_mapper,
             )
+            if output_format in ("pin", "pin_gz"):
+                write_pin_text_rows(
+                    output_path,
+                    output_format == "pin_gz",
+                    rows,
+                    columns,
+                )
+                return
+            df = _rows_to_dataframe(rows, columns)
+            _write_parquet_dataframe(df, output_path, output_format, columns)
+            return
+
+        # percolator parquet input
+        df_in = _read_parquet_dataframe(input_path, input_format)
+        df_in = _normalize_percolator_dataframe(
+            df_in,
+            proteins_keep=proteins_keep,
+            peptide_mapper=peptide_mapper,
+        )
+        columns = [str(col) for col in df_in.columns]
+        if output_format in ("parquet", "parquet_gz"):
+            _write_parquet_dataframe(df_in, output_path, output_format, columns)
+            return
+        rows_out = _dataframe_to_pin_rows(df_in, columns)
+        write_pin_text_rows(output_path, output_format == "pin_gz", rows_out, columns)
+        return
+
+    if input_format in ("pin", "pin_gz"):
+        unimod_entries = _load_unimod_entries_required(unimod_path)
 
         warning_sink = WarningSink()
         columns, rows = read_pin_text_rows(
@@ -519,7 +687,8 @@ def main() -> None:
         description=(
             "Convert Comet PIN files among .pin, .pin.gz, .pin.parquet, .pin.parquet.gz.\n"
             "For PIN-text input, Peptide is normalized to UniMod tags ([U:id]) and flanks are removed.\n"
-            "For parquet input, Peptide text is preserved."
+            "For parquet input, Peptide text is preserved.\n"
+            "With --input-percolator, non-.parquet input is treated as percolator TSV."
         ),
         epilog=(
             "Custom --unimod file format (CSV or TSV):\n"
@@ -531,6 +700,7 @@ def main() -> None:
             "  python pyCometPinConverter.py --input x.pin\n"
             "  python pyCometPinConverter.py --input x.pin.gz --output x.pin.parquet.gz\n"
             "  python pyCometPinConverter.py --input x.pin.parquet --output x.pin\n"
+            "  python pyCometPinConverter.py --input xx.decoy.psms.tsv --input-percolator\n"
             "  python pyCometPinConverter.py --input-str '-.n[42.0106]M[15.9949]LQFLLEVNK.S'\n"
             "  python pyCometPinConverter.py --input x.pin --unimod custom_unimod.tsv --unimod-ppm 10\n"
         ),
@@ -543,11 +713,20 @@ def main() -> None:
         help="Single PIN-style peptide string to convert and print.",
     )
     parser.add_argument(
+        "--input-percolator",
+        action="store_true",
+        help=(
+            "Treat --input as percolator output. "
+            "If input path does not end with .parquet/.parquet.gz, it is parsed as TSV. "
+            "Column names are preserved; only peptide/proteinIds values are normalized."
+        ),
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help=(
-            "Output file path. If omitted and input is .pin/.pin.gz, output defaults to .pin.parquet. "
-            "For .pin.parquet/.pin.parquet.gz input, --output is required."
+            "Output file path. If omitted and input is text (.pin/.pin.gz or --input-percolator TSV), "
+            "output defaults to <input>.parquet. For parquet input, --output is required."
         ),
     )
     parser.add_argument(
@@ -576,6 +755,8 @@ def main() -> None:
         parser.error("--unimod-ppm must be >= 0")
 
     if args.input_str is not None:
+        if args.input_percolator:
+            parser.error("--input-percolator cannot be used with --input-str")
         if args.output:
             parser.error("--output cannot be used with --input-str")
         try:
@@ -590,7 +771,8 @@ def main() -> None:
         print(converted)
         return
 
-    output_path = args.output if args.output else default_output_path(args.input)
+    input_format = detect_input_format(args.input, args.input_percolator)
+    output_path = args.output if args.output else default_output_path(args.input, input_format)
 
     try:
         convert_file(
@@ -599,6 +781,7 @@ def main() -> None:
             proteins_keep=args.proteins_keep,
             unimod_path=args.unimod,
             unimod_ppm=args.unimod_ppm,
+            input_percolator=args.input_percolator,
         )
     except ConversionError as exc:
         print(f"error: {exc}", file=sys.stderr)

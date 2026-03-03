@@ -23,6 +23,12 @@ if more than one proteins, when converting, join the Proteins with ','
 
 use argparse --input --output
 also support argparse `--input-str` for single peptide conversion (no input/output file required)
+also support argparse `--input-percolator`:
+- input is treated as percolator output
+- if input file suffix is not `.parquet`/`.parquet.gz`, parse as TSV even if suffix is not `.pin`
+- `peptide` column is treated like Comet `Peptide` and gets the same unimod conversion
+- `proteinIds` column is treated like Comet `Proteins` and gets `--proteins-keep` normalization
+- **do not change column names** in percolator mode (only update values in existing columns)
 
 if input can ends with .pin .pin.gz .pin.parquet .pin.parquet.gz
 output can also be these format.
