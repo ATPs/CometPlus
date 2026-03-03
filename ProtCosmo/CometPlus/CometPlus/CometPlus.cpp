@@ -18,6 +18,7 @@
 #include "CometDataInternal.h"
 #include "CometInterfaces.h"
 #include "CometPlusMultiDB.h"
+#include "CometPlusParams.h"
 #include "NovelModeUtils.h"
 #include "githubsha.h"
 #include <algorithm>
@@ -34,6 +35,7 @@
 #include <fstream>
 #include <sstream>
 #include <iterator>
+#include <functional>
 #ifndef _WIN32
 #include <unistd.h>
 #include <sys/types.h>
@@ -44,7 +46,9 @@ using namespace CometInterfaces;
 
 static string g_sCometPlusExecutablePath;
 
-void Usage(char *pszCmd);
+void Usage(char *pszCmd,
+           bool bFullHelp = false,
+           const char *pszParamsFile = NULL);
 void ProcessCmdLine(int argc,
                     char *argv[],
                     char *szParamsFile,
@@ -52,8 +56,6 @@ void ProcessCmdLine(int argc,
                     ICometSearchManager *pSearchMgr,
                     string &sMergedDatabasePath,
                     vector<string> &vTempArtifacts);
-void LoadParameters(char *pszParamsFile,
-                    ICometSearchManager *pSearchMgr);
 void PrintParams(int iPrintParams);
 bool ValidateInputFile(char *pszInputFileName);
 
@@ -116,7 +118,9 @@ int main(int argc, char *argv[])
 } // main
 
 
-void Usage(char *pszCmd)
+void Usage(char *pszCmd,
+           bool bFullHelp,
+           const char *pszParamsFile)
 {
    char szTmp[1024];
    int iSize = sizeof(szTmp);
@@ -154,6 +158,7 @@ void Usage(char *pszCmd)
    logout("                 -i         create .idx file for fragment ion indexing\n");
    logout("                 -j         create .idx file for peptide indexing\n");
    logout("                 note: --novel_* and --scan* options are not supported with -i/-j\n");
+   logout("                 --help-full           print complete CLI parameter-override help\n");
    logout("\n");
    snprintf(szTmp, iSize, "       example:  %s file1.mzXML file2.mzXML\n", pszCmd);
    logout(szTmp);
@@ -171,6 +176,82 @@ void Usage(char *pszCmd)
    logout(szTmp);
 
    logout("\n");
+
+   if (bFullHelp)
+   {
+      const char *pszActiveParams = pszParamsFile == NULL ? "comet.params" : pszParamsFile;
+      vector<ParamHelpEntry> vHelpEntries;
+      string sErrorMsg;
+
+      logout(" Full help - generic parameter overrides\n");
+      logout("   This mode prints the detailed override guide and the full parameter-key list.\n");
+      logout("   Use --help for short usage only.\n");
+      logout("   syntax: --<param_key> <value>\n");
+      logout("           --<param_key>=<value>\n");
+      logout("   values with spaces must be quoted as one shell argument.\n");
+      logout("   values may include inline comments after '#', which are ignored during parsing.\n");
+      logout("   variable mod example:\n");
+      logout("      --variable_mod01 \"15.994915 M 0 3 -1 0 0  0.0 # Oxidation (M)\"\n");
+      logout("   dedicated options must be used for:\n");
+      logout("      database_name -> --database\n");
+      logout("      num_threads -> --thread\n");
+      logout("      scan_range -> --first-scan/--last-scan\n");
+      logout("      spectrum_batch_size -> -B\n");
+      logout("   note: [COMET_ENZYME_INFO] entries are not command-line overridable keys.\n");
+
+      snprintf(szTmp, iSize, "   overridable keys are loaded from: %s\n", pszActiveParams);
+      logout(szTmp);
+
+      if (CollectParamsHelpEntries(pszActiveParams, vHelpEntries, sErrorMsg))
+      {
+         logout("   key source: selected params file\n");
+      }
+      else
+      {
+         vHelpEntries = GetFallbackHelpEntries();
+         string sMsg = "   key source: built-in fallback list (params file not readable)\n";
+         sMsg += "   reason:" + sErrorMsg;
+         logout(sMsg);
+      }
+
+      const set<string> &setDedicatedKeys = GetDedicatedOverrideKeys();
+      logout("   keys:\n");
+      std::sort(vHelpEntries.begin(),
+                vHelpEntries.end(),
+                [](const ParamHelpEntry &a, const ParamHelpEntry &b)
+                {
+                   return a.sName < b.sName;
+                });
+      for (size_t i = 0; i < vHelpEntries.size(); ++i)
+      {
+         const ParamHelpEntry &entry = vHelpEntries.at(i);
+         if (setDedicatedKeys.find(entry.sName) != setDedicatedKeys.end())
+            continue;
+
+         snprintf(szTmp, iSize, "      --%s\n", entry.sName.c_str());
+         logout(szTmp);
+
+         string sGuide;
+         if (!entry.sValueExample.empty())
+            sGuide = "example: " + entry.sValueExample;
+
+         if (!entry.sComment.empty())
+         {
+            if (!sGuide.empty())
+               sGuide += "  # " + entry.sComment;
+            else
+               sGuide = "# " + entry.sComment;
+         }
+
+         if (sGuide.empty())
+            sGuide = "example: <value from params-file format>";
+
+         snprintf(szTmp, iSize, "         %s\n", sGuide.c_str());
+         logout(szTmp);
+      }
+
+      logout("\n");
+   }
 
    exit(1);
 }
@@ -272,519 +353,6 @@ void SetOptions(char *arg,
       default:
          break;
    }
-}
-
-
-// Reads comet.params parameter file.
-void LoadParameters(char* pszParamsFile,
-                    ICometSearchManager* pSearchMgr)
-{
-   double dTempMass;
-   int iSearchEnzymeNumber = 1,
-       iSearchEnzyme2Number = 0,
-       iSampleEnzymeNumber = 1,
-       iAllowedMissedCleavages = 2;
-   char szParamBuf[SIZE_BUF],
-        szParamName[128],
-        szParamVal[512],
-        szParamStringVal[512],
-        szVersion[128],
-        szErrorMsg[512];
-   FILE* fp;
-   bool bCurrentParamsFile = 0, bValidParamsFile;
-   char* pStr;
-   VarMods varModsParam;
-   IntRange intRangeParam;
-   DoubleRange doubleRangeParam;
-
-   int iSize = sizeof(szParamStringVal);
-
-   if ((fp = fopen(pszParamsFile, "r")) == NULL)
-   {
-      string strErrorMsg = "\n Comet version " +  g_sCometVersion + "\n\n"
-         + " Error - cannot open parameter file \"" + std::string(pszParamsFile) + "\".\n";
-      logerr(strErrorMsg);
-      exit(1);
-   }
-
-   // Validate params file version
-   strcpy(szVersion, "unknown");
-   bValidParamsFile = false;
-   while (!feof(fp))
-   {
-      if (fgets(szParamBuf, SIZE_BUF, fp) != NULL)
-      {
-         if (!strncmp(szParamBuf, "# comet_version ", 16))
-         {
-            char szRev1[12], szRev2[12];
-            sscanf(szParamBuf, "%*s %*s %127s %11s %11s", szVersion, szRev1, szRev2);
-
-            if (pSearchMgr->IsValidCometVersion(std::string(szVersion)))
-            {
-               bValidParamsFile = true;
-               char szVersion2[128];
-               sprintf(szVersion2, "%.100s %.11s %.11s", szVersion, szRev1, szRev2);
-               strcpy(szVersion, szVersion2);
-               pSearchMgr->SetParam("# comet_version", szVersion, szVersion);
-               break;
-            }
-         }
-      }
-   }
-
-   if (!bValidParamsFile)
-   {
-      string strErrorMsg = "\n Comet version " + g_sCometVersion + "\n\n"
-         + " The comet.params file is from version " + std::string(szVersion) + "\n"
-         + " Please update your comet.params file.  You can generate\n"
-         + " a new parameters file using \"comet -p\"\n\n";
-      logerr(strErrorMsg);
-      exit(1);
-   }
-
-   rewind(fp);
-
-   // Helper lambdas for common parameter types
-   auto parse_int = [&](const char* paramName) {
-      int val = 0;
-      sscanf(szParamVal, "%d", &val);
-      snprintf(szParamStringVal, iSize, "%d", val);
-      pSearchMgr->SetParam(paramName, szParamStringVal, val);
-   };
-   auto parse_double = [&](const char* paramName) {
-      double val = 0;
-      sscanf(szParamVal, "%lf", &val);
-      snprintf(szParamStringVal, iSize, "%lf", val);
-      pSearchMgr->SetParam(paramName, szParamStringVal, val);
-   };
-   auto parse_long = [&](const char* paramName) {
-      long val = 0;
-      sscanf(szParamVal, "%ld", &val);
-      snprintf(szParamStringVal, iSize, "%ld", val);
-      pSearchMgr->SetParam(paramName, szParamStringVal, val);
-   };
-   auto parse_string = [&](const char* paramName, int maxLen = 255) {
-      char buf[512] = { 0 };
-      char fmt[16];
-      snprintf(fmt, sizeof(fmt), "%%%ds", maxLen);
-      sscanf(szParamVal, fmt, buf);
-      pSearchMgr->SetParam(paramName, buf, buf);
-   };
-   auto parse_int_range = [&](const char* paramName) {
-      IntRange val = { 0,0 };
-      sscanf(szParamVal, "%d %d", &val.iStart, &val.iEnd);
-      snprintf(szParamStringVal, iSize, "%d %d", val.iStart, val.iEnd);
-      pSearchMgr->SetParam(paramName, szParamStringVal, val);
-   };
-   auto parse_double_range = [&](const char* paramName) {
-      DoubleRange val = { 0.0,0.0 };
-      sscanf(szParamVal, "%lf %lf", &val.dStart, &val.dEnd);
-      snprintf(szParamStringVal, iSize, "%lf %lf", val.dStart, val.dEnd);
-      pSearchMgr->SetParam(paramName, szParamStringVal, val);
-   };
-
-   // Remove whitespace lambda
-   auto trim_whitespace = [](char* buf) {
-      int iLen = (int)strlen(buf);
-      char* szTrimmed = buf;
-      while (iLen > 0 && isspace(szTrimmed[iLen - 1]))
-         szTrimmed[--iLen] = 0;
-      while (*szTrimmed && isspace(*szTrimmed))
-      {
-         ++szTrimmed;
-         --iLen;
-      }
-      memmove(buf, szTrimmed, iLen + 1);
-   };
-
-   struct ParamEntry {
-      std::function<void()> handler;
-   };
-
-   std::unordered_map<std::string, ParamEntry> paramHandlers =
-   {
-      // String with whitespace trim
-      {"database_name",                { [&]() { trim_whitespace(szParamVal); char szFile[SIZE_FILE]; strcpy(szFile, szParamVal); pSearchMgr->SetParam("database_name", szFile, szFile); }}},
-      {"peff_obo",                     { [&]() { trim_whitespace(szParamVal); char szFile[SIZE_FILE]; strcpy(szFile, szParamVal); pSearchMgr->SetParam("peff_obo", szFile, szFile); }}},
-      {"spectral_library_name",        { [&]() { trim_whitespace(szParamVal); char szFile[SIZE_FILE]; strcpy(szFile, szParamVal); pSearchMgr->SetParam("spectral_library_name", szFile, szFile); }}},
-      // Simple strings
-      {"activation_method",            { [&]() { parse_string("activation_method", 23); }}},
-      {"decoy_prefix",                 { [&]() { parse_string("decoy_prefix", 255); }}},
-      {"output_suffix",                { [&]() { parse_string("output_suffix", 255); }}},
-      {"pinfile_protein_delimiter",    { [&]() { parse_string("pinfile_protein_delimiter", 255); }}},
-      {"protein_modslist_file",        { [&]() { parse_string("protein_modslist_file", 255); }}},
-      {"text_file_extension",          { [&]() { parse_string("text_file_extension", 255); }}},
-      // Integers
-      {"allowed_missed_cleavage",      { [&]() { parse_int("allowed_missed_cleavage"); sscanf(szParamVal, "%d", &iAllowedMissedCleavages); }}},
-      {"clip_nterm_aa",                { [&]() { parse_int("clip_nterm_aa"); }}},
-      {"clip_nterm_methionine",        { [&]() { parse_int("clip_nterm_methionine"); }}},
-      {"correct_mass",                 { [&]() { parse_int("correct_mass"); }}},
-      {"decoy_search",                 { [&]() { parse_int("decoy_search"); }}},
-      {"equal_I_and_L",                { [&]() { parse_int("equal_I_and_L"); }}},
-      {"explicit_deltacn",             { [&]() { parse_int("explicit_deltacn"); }}},
-      {"export_additional_pepxml_scores", { [&]() { parse_int("export_additional_pepxml_scores"); }}},
-      {"fragindex_min_ions_report",    { [&]() { parse_int("fragindex_min_ions_report"); }}},
-      {"fragindex_min_ions_score",     { [&]() { parse_int("fragindex_min_ions_score"); }}},
-      {"fragindex_num_spectrumpeaks",  { [&]() { parse_int("fragindex_num_spectrumpeaks"); }}},
-      {"fragindex_skipreadprecursors" ,{ [&]() { parse_int("fragindex_skipreadprecursors"); }}},
-      {"isotope_error",                { [&]() { parse_int("isotope_error"); }}},
-      {"mango_search",                 { [&]() { parse_int("mango_search"); }}},
-      {"mass_type_fragment",           { [&]() { parse_int("mass_type_fragment"); }}},
-      {"mass_type_parent",             { [&]() { parse_int("mass_type_parent"); }}},
-      {"max_duplicate_proteins",       { [&]() { parse_int("max_duplicate_proteins"); }}},
-      {"max_fragment_charge",          { [&]() { parse_int("max_fragment_charge"); }}},
-      {"max_precursor_charge",         { [&]() { parse_int("max_precursor_charge"); }}},
-      {"max_variable_mods_in_peptide", { [&]() { parse_int("max_variable_mods_in_peptide"); }}},
-      {"min_precursor_charge",         { [&]() { parse_int("min_precursor_charge"); }}},
-      {"minimum_peaks",                { [&]() { parse_int("minimum_peaks"); }}},
-      {"ms_level",                     { [&]() { parse_int("ms_level"); }}},
-      {"nucleotide_reading_frame",     { [&]() { parse_int("nucleotide_reading_frame"); }}},
-      {"num_enzyme_termini",           { [&]() { parse_int("num_enzyme_termini"); }}},
-      {"num_output_lines",             { [&]() { parse_int("num_output_lines"); }}},
-      {"num_results",                  { [&]() { parse_int("num_results"); }}},
-      {"num_threads",                  { [&]() { parse_int("num_threads"); }}},
-      {"old_mods_encoding",            { [&]() { parse_int("old_mods_encoding"); }}},
-      {"output_mzidentmlfile",         { [&]() { parse_int("output_mzidentmlfile"); }}},
-      {"output_pepxmlfile",            { [&]() { parse_int("output_pepxmlfile"); }}},
-      {"output_percolatorfile",        { [&]() { parse_int("output_percolatorfile"); bCurrentParamsFile = 1; }}},
-      {"output_sqtfile",               { [&]() { parse_int("output_sqtfile"); }}},
-      {"output_sqtstream",             { [&]() { parse_int("output_sqtstream"); }}},
-      {"output_txtfile",               { [&]() { parse_int("output_txtfile"); }}},
-      {"override_charge",              { [&]() { parse_int("override_charge"); }}},
-      {"peff_format",                  { [&]() { parse_int("peff_format"); }}},
-      {"peff_verbose_output",          { [&]() { parse_int("peff_verbose_output"); }}},
-      {"peptide_mass_units",           { [&]() { parse_int("peptide_mass_units"); }}},
-      {"precursor_tolerance_type",     { [&]() { parse_int("precursor_tolerance_type"); }}},
-      {"print_expect_score",           { [&]() { parse_int("print_expect_score"); }}},
-      {"print_ascorepro_score",        { [&]() { parse_int("print_ascorepro_score"); }}},
-      {"remove_precursor_peak",        { [&]() { parse_int("remove_precursor_peak"); }}},
-      {"require_variable_mod",         { [&]() { parse_int("require_variable_mod"); }}},
-      {"resolve_fullpaths",            { [&]() { parse_int("resolve_fullpaths"); }}},
-      {"sample_enzyme_number",         { [&]() { parse_int("sample_enzyme_number"); sscanf(szParamVal, "%d", &iSampleEnzymeNumber); }}},
-      {"scale_fragmentNL",             { [&]() { parse_int("scale_fragmentNL"); }}},
-      {"search_enzyme2_number",        { [&]() { parse_int("search_enzyme2_number"); sscanf(szParamVal, "%d", &iSearchEnzyme2Number); }}},
-      {"search_enzyme_number",         { [&]() { parse_int("search_enzyme_number"); sscanf(szParamVal, "%d", &iSearchEnzymeNumber); }}},
-      {"speclib_ms_level",             { [&]() { parse_int("speclib_ms_level"); }}},
-      {"spectrum_batch_size",          { [&]() { parse_int("spectrum_batch_size"); }}},
-      {"theoretical_fragment_ions",    { [&]() { parse_int("theoretical_fragment_ions"); }}},
-      {"use_A_ions",                   { [&]() { parse_int("use_A_ions"); }}},
-      {"use_B_ions",                   { [&]() { parse_int("use_B_ions"); }}},
-      {"use_C_ions",                   { [&]() { parse_int("use_C_ions"); }}},
-      {"use_NL_ions",                  { [&]() { parse_int("use_NL_ions"); }}},
-      {"use_X_ions",                   { [&]() { parse_int("use_X_ions"); }}},
-      {"use_Y_ions",                   { [&]() { parse_int("use_Y_ions"); }}},
-      {"use_Z1_ions",                  { [&]() { parse_int("use_Z1_ions"); }}},
-      {"use_Z_ions",                   { [&]() { parse_int("use_Z_ions"); }}},
-      {"xcorr_processing_offset",      { [&]() { parse_int("xcorr_processing_offset"); }}},
-      // Doubles
-      {"add_A_alanine",                { [&]() { parse_double("add_A_alanine"); }}},
-      {"add_B_user_amino_acid",        { [&]() { parse_double("add_B_user_amino_acid"); }}},
-      {"add_C_cysteine",               { [&]() { parse_double("add_C_cysteine"); }}},
-      {"add_Cterm_peptide",            { [&]() { parse_double("add_Cterm_peptide"); }}},
-      {"add_Cterm_protein",            { [&]() { parse_double("add_Cterm_protein"); }}},
-      {"add_D_aspartic_acid",          { [&]() { parse_double("add_D_aspartic_acid"); }}},
-      {"add_E_glutamic_acid",          { [&]() { parse_double("add_E_glutamic_acid"); }}},
-      {"add_F_phenylalanine",          { [&]() { parse_double("add_F_phenylalanine"); }}},
-      {"add_G_glycine",                { [&]() { parse_double("add_G_glycine"); }}},
-      {"add_H_histidine",              { [&]() { parse_double("add_H_histidine"); }}},
-      {"add_I_isoleucine",             { [&]() { parse_double("add_I_isoleucine"); }}},
-      {"add_J_user_amino_acid",        { [&]() { parse_double("add_J_user_amino_acid"); }}},
-      {"add_K_lysine",                 { [&]() { parse_double("add_K_lysine"); }}},
-      {"add_L_leucine",                { [&]() { parse_double("add_L_leucine"); }}},
-      {"add_M_methionine",             { [&]() { parse_double("add_M_methionine"); }}},
-      {"add_N_asparagine",             { [&]() { parse_double("add_N_asparagine"); }}},
-      {"add_Nterm_peptide",            { [&]() { parse_double("add_Nterm_peptide"); }}},
-      {"add_Nterm_protein",            { [&]() { parse_double("add_Nterm_protein"); }}},
-      {"add_O_pyrrolysine",            { [&]() { parse_double("add_O_pyrrolysine"); }}},
-      {"add_P_proline",                { [&]() { parse_double("add_P_proline"); }}},
-      {"add_Q_glutamine",              { [&]() { parse_double("add_Q_glutamine"); }}},
-      {"add_R_arginine",               { [&]() { parse_double("add_R_arginine"); }}},
-      {"add_S_serine",                 { [&]() { parse_double("add_S_serine"); }}},
-      {"add_T_threonine",              { [&]() { parse_double("add_T_threonine"); }}},
-      {"add_U_selenocysteine",         { [&]() { parse_double("add_U_selenocysteine"); }}},
-      {"add_V_valine",                 { [&]() { parse_double("add_V_valine"); }}},
-      {"add_W_tryptophan",             { [&]() { parse_double("add_W_tryptophan"); }}},
-      {"add_X_user_amino_acid",        { [&]() { parse_double("add_X_user_amino_acid"); }}},
-      {"add_Y_tyrosine",               { [&]() { parse_double("add_Y_tyrosine"); }}},
-      {"add_Z_user_amino_acid",        { [&]() { parse_double("add_Z_user_amino_acid"); }}},
-      {"fragindex_max_fragmentmass",   { [&]() { parse_double("fragindex_max_fragmentmass"); }}},
-      {"fragindex_min_fragmentmass",   { [&]() { parse_double("fragindex_min_fragmentmass"); }}},
-      {"fragment_bin_offset",          { [&]() { parse_double("fragment_bin_offset"); }}},
-      {"fragment_bin_tol",             { [&]() { parse_double("fragment_bin_tol"); }}},
-      {"minimum_intensity",            { [&]() { parse_double("minimum_intensity"); }}},
-      {"minimum_xcorr",                { [&]() { parse_double("minimum_xcorr"); }}},
-      {"peptide_mass_tolerance",       { [&]() { parse_double("peptide_mass_tolerance"); }}},
-      {"peptide_mass_tolerance_lower", { [&]() { parse_double("peptide_mass_tolerance_lower"); }}},
-      {"peptide_mass_tolerance_upper", { [&]() { parse_double("peptide_mass_tolerance_upper"); }}},
-      {"percentage_base_peak",         { [&]() { parse_double("percentage_base_peak"); }}},
-      {"remove_precursor_tolerance",   { [&]() { parse_double("remove_precursor_tolerance"); }}},
-      {"set_A_alanine",                { [&]() { parse_double("set_A_alanine"); }}},
-      {"set_B_user_amino_acid",        { [&]() { parse_double("set_B_user_amino_acid"); }}},
-      {"set_C_cysteine",               { [&]() { parse_double("set_C_cysteine"); }}},
-      {"set_D_aspartic_acid",          { [&]() { parse_double("set_D_aspartic_acid"); }}},
-      {"set_E_glutamic_acid",          { [&]() { parse_double("set_E_glutamic_acid"); }}},
-      {"set_F_phenylalanine",          { [&]() { parse_double("set_F_phenylalanine"); }}},
-      {"set_G_glycine",                { [&]() { parse_double("set_G_glycine"); }}},
-      {"set_H_histidine",              { [&]() { parse_double("set_H_histidine"); }}},
-      {"set_I_isoleucine",             { [&]() { parse_double("set_I_isoleucine"); }}},
-      {"set_J_user_amino_acid",        { [&]() { parse_double("set_J_user_amino_acid"); }}},
-      {"set_K_lysine",                 { [&]() { parse_double("set_K_lysine"); }}},
-      {"set_L_leucine",                { [&]() { parse_double("set_L_leucine"); }}},
-      {"set_M_methionine",             { [&]() { parse_double("set_M_methionine"); }}},
-      {"set_N_asparagine",             { [&]() { parse_double("set_N_asparagine"); }}},
-      {"set_O_pyrrolysine",            { [&]() { parse_double("set_O_pyrrolysine"); }}},
-      {"set_P_proline",                { [&]() { parse_double("set_P_proline"); }}},
-      {"set_Q_glutamine",              { [&]() { parse_double("set_Q_glutamine"); }}},
-      {"set_R_arginine",               { [&]() { parse_double("set_R_arginine"); }}},
-      {"set_S_serine",                 { [&]() { parse_double("set_S_serine"); }}},
-      {"set_T_threonine",              { [&]() { parse_double("set_T_threonine"); }}},
-      {"set_U_selenocysteine",         { [&]() { parse_double("set_U_selenocysteine"); }}},
-      {"set_V_valine",                 { [&]() { parse_double("set_V_valine"); }}},
-      {"set_W_tryptophan",             { [&]() { parse_double("set_W_tryptophan"); }}},
-      {"set_X_user_amino_acid",        { [&]() { parse_double("set_X_user_amino_acid"); }}},
-      {"set_Y_tyrosine",               { [&]() { parse_double("set_Y_tyrosine"); }}},
-      {"set_Z_user_amino_acid",        { [&]() { parse_double("set_Z_user_amino_acid"); }}},
-      // Long
-      { "max_iterations",              { [&]() { parse_long("max_iterations"); }}},
-      // Ranges
-      {"clear_mz_range",               { [&]() { parse_double_range("clear_mz_range"); }}},
-      {"digest_mass_range",            { [&]() { parse_double_range("digest_mass_range"); }}},
-      {"ms1_mass_range",               { [&]() { parse_double_range("ms1_mass_range"); }} },
-      {"peptide_length_range",         { [&]() { parse_int_range("peptide_length_range"); }}},
-      {"precursor_charge",             { [&]() { parse_int_range("precursor_charge"); }}},
-      {"scan_range",                   { [&]() { parse_int_range("scan_range"); }}},
-      // Special: mass_offsets and precursor_NL_ions (vectors)
-      {"mass_offsets",                 { [&]() {
-         trim_whitespace(szParamVal);
-         char szMassOffsets[512];
-         std::vector<double> vectorSetMassOffsets;
-         char* tok;
-         char delims[] = " \t";
-         double dMass;
-         strcpy(szMassOffsets, szParamVal);
-         tok = strtok(szParamVal, delims);
-         while (tok != NULL)
-         {
-            if (sscanf(tok, "%lf", &dMass) == 1)
-            {
-               if (dMass >= 0.0)
-                  vectorSetMassOffsets.push_back(dMass);
-               tok = strtok(NULL, delims);
-            }
-         }
-         sort(vectorSetMassOffsets.begin(), vectorSetMassOffsets.end());
-         pSearchMgr->SetParam("mass_offsets", szMassOffsets, vectorSetMassOffsets);
-      }}},
-      {"precursor_NL_ions",            { [&]() {
-          trim_whitespace(szParamVal);
-          char szMassOffsets[512];
-          std::vector<double> vectorPrecursorNLIons;
-          char* tok;
-          char delims[] = " \t";
-          double dMass;
-          strcpy(szMassOffsets, szParamVal);
-          tok = strtok(szParamVal, delims);
-          while (tok != NULL)
-          {
-             sscanf(tok, "%lf", &dMass);
-             if (dMass >= 0.0)
-                vectorPrecursorNLIons.push_back(dMass);
-             tok = strtok(NULL, delims);
-          }
-          sort(vectorPrecursorNLIons.begin(), vectorPrecursorNLIons.end());
-          pSearchMgr->SetParam("precursor_NL_ions", szMassOffsets, vectorPrecursorNLIons);
-      }}}
-   };
-
-   // Main parameter parsing loop
-   while (!feof(fp))
-   {
-      if (fgets(szParamBuf, SIZE_BUF, fp) != NULL)
-      {
-         if (!strncmp(szParamBuf, "[COMET_ENZYME_INFO]", 19))
-            break;
-         if ((pStr = strchr(szParamBuf, '#')) != NULL)
-            *pStr = 0;
-         if ((pStr = strchr(szParamBuf, '=')) != NULL)
-         {
-            strcpy(szParamVal, pStr + 1);
-            *pStr = 0;
-            sscanf(szParamBuf, "%127s", szParamName);
-
-            // Handle variable_modNN block
-            if (!strncmp(szParamName, "variable_mod", 12) && strlen(szParamName) == 14)
-            {
-               char szTmp[512], szTmp1[512];
-
-               // Validate that the variable mod parameter has the correct number of fields (8 entries)
-               int iEntryCount = 0;
-               bool inString = false;
-
-               for (int i = 0; szParamVal[i] != '\0'; i++)
-               {
-                  if (!isspace(szParamVal[i]))
-                  {  // We're in a non-whitespace character
-                     if (!inString)
-                     {  // Starting a new string
-                        iEntryCount++;
-                        inString = true;
-                     }
-                  }
-                  else
-                  {  // We hit whitespace
-                     inString = false;
-                  }
-               }
-
-               if (iEntryCount != 8)
-               {
-                  string strErrorMsg = "\n Comet version " + g_sCometVersion + "\n\n"
-                     + " Error: Invalid variable_mod parameter found; expected parameter 8 values but found " + std::to_string(iEntryCount) + ".\n"
-                     + "        " + std::string(szParamName) + " = " + std::string(szParamVal) + "\n";
-                  logerr(strErrorMsg);
-                  exit(1);
-               }
-
-               varModsParam.szVarModChar[0] = '\0';
-               varModsParam.iMinNumVarModAAPerMod = 0;
-               varModsParam.iMaxNumVarModAAPerMod = 0;
-
-               sscanf(szParamVal, "%lf %31s %d %511s %d %d %d %s",
-                  &varModsParam.dVarModMass,
-                  varModsParam.szVarModChar,
-                  &varModsParam.iBinaryMod,
-                  szTmp,
-                  &varModsParam.iVarModTermDistance,
-                  &varModsParam.iWhichTerm,
-                  &varModsParam.iRequireThisMod,
-                  szTmp1);
-
-               char* pStr;
-               if ((pStr = strchr(szTmp1, ',')))
-                  sscanf(szTmp1, "%lf,%lf", &varModsParam.dNeutralLoss, &varModsParam.dNeutralLoss2);
-               else
-                  sscanf(szTmp1, "%lf", &varModsParam.dNeutralLoss);
-
-               if ((pStr = strchr(szTmp, ',')) == NULL)
-                  sscanf(szTmp, "%d", &varModsParam.iMaxNumVarModAAPerMod);
-               else
-               {
-                  *pStr = ' ';
-                  sscanf(szTmp, "%d %d", &varModsParam.iMinNumVarModAAPerMod, &varModsParam.iMaxNumVarModAAPerMod);
-               }
-
-#ifdef _WIN32
-               szParamVal[strlen(szParamVal) - 2] = '\0';
-#else
-               szParamVal[strlen(szParamVal) - 1] = '\0';
-#endif
-               snprintf(szParamStringVal, iSize, "%s", szParamVal);
-               pSearchMgr->SetParam(szParamName, szParamStringVal, varModsParam);
-               continue;
-            }
-
-            auto it = paramHandlers.find(szParamName);
-            if (it != paramHandlers.end())
-            {
-               it->second.handler();
-            }
-            else
-            {
-               sprintf(szErrorMsg, " Warning - invalid parameter found: %s.  Parameter will be ignored.\n", szParamName);
-               logout(szErrorMsg);
-            }
-         }
-      }
-   }
-
-   if ((fgets(szParamBuf, SIZE_BUF, fp) == NULL))
-   {
-      sprintf(szErrorMsg, " Error - cannot fgets a line after expected [COMET_ENZYME_INFO]\n");
-      logout(szErrorMsg);
-   }
-
-   // Get enzyme specificity.
-   char szSearchEnzymeName[ENZYME_NAME_LEN];
-   char szSearchEnzyme2Name[ENZYME_NAME_LEN];
-   char szSampleEnzymeName[ENZYME_NAME_LEN];
-   EnzymeInfo enzymeInformation;
-
-   strcpy(szSearchEnzymeName, "-");
-   strcpy(szSearchEnzyme2Name, "-");
-   strcpy(szSampleEnzymeName, "-");
-
-   std::string enzymeInfoStrVal;
-   while (!feof(fp))
-   {
-      int iCurrentEnzymeNumber;
-      sscanf(szParamBuf, "%d.", &iCurrentEnzymeNumber);
-      enzymeInfoStrVal += szParamBuf;
-
-      if (iCurrentEnzymeNumber == iSearchEnzymeNumber)
-      {
-         sscanf(szParamBuf, "%lf %47s %d %19s %19s\n",
-            &dTempMass,
-            enzymeInformation.szSearchEnzymeName,
-            &enzymeInformation.iSearchEnzymeOffSet,
-            enzymeInformation.szSearchEnzymeBreakAA,
-            enzymeInformation.szSearchEnzymeNoBreakAA);
-      }
-      if (iCurrentEnzymeNumber == iSearchEnzyme2Number)
-      {
-         sscanf(szParamBuf, "%lf %47s %d %19s %19s\n",
-            &dTempMass,
-            enzymeInformation.szSearchEnzyme2Name,
-            &enzymeInformation.iSearchEnzyme2OffSet,
-            enzymeInformation.szSearchEnzyme2BreakAA,
-            enzymeInformation.szSearchEnzyme2NoBreakAA);
-      }
-      if (iCurrentEnzymeNumber == iSampleEnzymeNumber)
-      {
-         sscanf(szParamBuf, "%lf %47s %d %19s %19s\n",
-            &dTempMass,
-            enzymeInformation.szSampleEnzymeName,
-            &enzymeInformation.iSampleEnzymeOffSet,
-            enzymeInformation.szSampleEnzymeBreakAA,
-            enzymeInformation.szSampleEnzymeNoBreakAA);
-      }
-      fgets(szParamBuf, SIZE_BUF, fp);
-   }
-   fclose(fp);
-
-   if (!bCurrentParamsFile)
-   {
-      string strErrorMsg = "\n Comet version " + g_sCometVersion + "\n\n"
-         + " Error - outdated params file; generate an update params file using '-p' option.\n";
-      logerr(strErrorMsg);
-      exit(1);
-   }
-
-   if (!strcmp(enzymeInformation.szSearchEnzymeName, "-"))
-   {
-      string strErrorMsg = "\n Comet version " + g_sCometVersion + "\n\n"
-         + " Error - search_enzyme_number " + std::to_string(iSearchEnzymeNumber) + " is missing definition in params file.\n";
-      logerr(strErrorMsg);
-      exit(1);
-   }
-
-   if (!strcmp(enzymeInformation.szSearchEnzyme2Name, "-"))
-   {
-      string strErrorMsg = "\n Comet version " + g_sCometVersion + "\n\n"
-         + " Error - search_enzyme2_number " + std::to_string(iSearchEnzyme2Number) + " is missing definition in params file.\n";
-      logerr(strErrorMsg);
-      exit(1);
-   }
-
-   if (!strcmp(enzymeInformation.szSampleEnzymeName, "-"))
-   {
-      string strErrorMsg = "\n Comet version " + g_sCometVersion + "\n\n"
-         + " Error - sample_enzyme_number " + std::to_string(iSampleEnzymeNumber) + " is missing definition in params file.\n";
-      logerr(strErrorMsg);
-      exit(1);
-   }
-
-   enzymeInformation.iAllowedMissedCleavage = iAllowedMissedCleavages;
-   pSearchMgr->SetParam("[COMET_ENZYME_INFO]", enzymeInfoStrVal, enzymeInformation);
 }
 
 
@@ -907,6 +475,7 @@ void ProcessCmdLine(int argc,
    bool bSetLastScan = false;
    bool bSetBatchSize = false;
    bool bSetThreadOverride = false;
+   bool bHelpFull = false;
    int iFirstScan = 0;
    int iLastScan = 0;
    int iBatchSize = 0;
@@ -914,6 +483,7 @@ void ProcessCmdLine(int argc,
    string sOutputName;
    vector<string> vDatabases;
    vector<string> vInputArgs;
+   vector<CmdParamOverride> vCliParamOverrides;
    NovelModeOptions novelOpts;
 
    for (int iArg = 1; iArg < argc; ++iArg)
@@ -940,6 +510,13 @@ void ProcessCmdLine(int argc,
             sValue = sArg.substr(iPos + 1);
          }
 
+         if (sName.empty())
+         {
+            string strErrorMsg = " Error - unknown option \"" + sArg + "\".\n";
+            logerr(strErrorMsg);
+            exit(1);
+         }
+
          auto RequireValue = [&](const string& sOptName) -> string
          {
             if (!sValue.empty())
@@ -958,6 +535,16 @@ void ProcessCmdLine(int argc,
          if (sName == "database")
          {
             vDatabases.push_back(RequireValue(sName));
+         }
+         else if (sName == "help-full")
+         {
+            if (!sValue.empty())
+            {
+               string strErrorMsg = " Error - option --help-full does not take a value.\n";
+               logerr(strErrorMsg);
+               exit(1);
+            }
+            bHelpFull = true;
          }
          else if (sName == "thread")
          {
@@ -1001,9 +588,10 @@ void ProcessCmdLine(int argc,
          }
          else
          {
-            string strErrorMsg = " Error - unknown option \"" + sArg + "\".\n";
-            logerr(strErrorMsg);
-            exit(1);
+            CmdParamOverride cliOverride;
+            cliOverride.sName = sName;
+            cliOverride.sValue = RequireValue(sName);
+            vCliParamOverrides.push_back(cliOverride);
          }
 
          continue;
@@ -1078,6 +666,11 @@ void ProcessCmdLine(int argc,
       vInputArgs.push_back(sArg);
    }
 
+   if (bHelpFull)
+   {
+      Usage(argv[0], true, sParamsFile.c_str());
+   }
+
    if (iPrintParams)
    {
       PrintParams(iPrintParams);
@@ -1087,7 +680,53 @@ void ProcessCmdLine(int argc,
    strncpy(szParamsFile, sParamsFile.c_str(), SIZE_FILE - 1);
    szParamsFile[SIZE_FILE - 1] = '\0';
 
-   LoadParameters(szParamsFile, pSearchMgr);
+   set<string> setParamKeys;
+   string sKeyErrMsg;
+   if (!CollectParamsFileKeys(szParamsFile, setParamKeys, sKeyErrMsg))
+   {
+      string strErrorMsg = "\n Comet version " + g_sCometVersion + "\n\n"
+         + sKeyErrMsg;
+      logerr(strErrorMsg);
+      exit(1);
+   }
+
+   auto DedicatedHint = [](const string &sParamKey) -> string
+   {
+      if (sParamKey == "database_name")
+         return "--database";
+      if (sParamKey == "num_threads")
+         return "--thread";
+      if (sParamKey == "scan_range")
+         return "--first-scan/--last-scan";
+      if (sParamKey == "spectrum_batch_size")
+         return "-B";
+      return "";
+   };
+
+   const set<string> &setDedicatedKeys = GetDedicatedOverrideKeys();
+   for (size_t i = 0; i < vCliParamOverrides.size(); ++i)
+   {
+      const string &sOverrideName = vCliParamOverrides.at(i).sName;
+
+      if (setDedicatedKeys.find(sOverrideName) != setDedicatedKeys.end())
+      {
+         string strErrorMsg = " Error - --" + sOverrideName
+            + " is not supported as a generic parameter override; use "
+            + DedicatedHint(sOverrideName) + " instead.\n";
+         logerr(strErrorMsg);
+         exit(1);
+      }
+
+      if (setParamKeys.find(sOverrideName) == setParamKeys.end())
+      {
+         string strErrorMsg = " Error - unknown option \"--" + sOverrideName
+            + "\"; key is not present in params file \"" + sParamsFile + "\".\n";
+         logerr(strErrorMsg);
+         exit(1);
+      }
+   }
+
+   LoadParameters(szParamsFile, pSearchMgr, vCliParamOverrides);
 
    if (bSetOutputName)
       pSearchMgr->SetOutputFileBaseName(sOutputName.c_str());

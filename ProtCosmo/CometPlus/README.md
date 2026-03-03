@@ -127,6 +127,40 @@ For `WITH_MZMLB=1` (mzMLb enabled), the same command should show `H5...` symbols
 ./ProtCosmo/CometPlus/cometplus --help
 ```
 
+### Full Help And Generic Param Overrides
+```bash
+./ProtCosmo/CometPlus/cometplus --params /path/to/comet.params --help-full
+```
+
+`--help-full` prints a long per-key guide. For each `--<param_key>`, it shows:
+- the current/default example value parsed from the params file
+- the inline `# ...` guidance comment from that params line when present
+- fallback built-in examples/comments when the params file is not readable
+
+Generic override syntax:
+- `--<param_key> <value>`
+- `--<param_key>=<value>`
+
+Rules:
+- `param_key` must exist in the loaded params file before `[COMET_ENZYME_INFO]`.
+- Multi-token values must be quoted as one shell argument.
+- Dedicated overrides are not accepted as generic keys:
+  - `database_name` -> use `--database`
+  - `num_threads` -> use `--thread`
+  - `scan_range` -> use `--first-scan`/`--last-scan`
+  - `spectrum_batch_size` -> use `-B`
+
+Examples:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --decoy_search 2 \
+  --fragment_bin_tol 0.02 \
+  --digest_mass_range "600 5000" \
+  --variable_mod01 "15.994915 M 0 3 -1 0 0  0.0 # Oxidation (M)" \
+  /path/to/input.mzML
+```
+
 ### Single database search
 ```bash
 ./ProtCosmo/CometPlus/cometplus \
