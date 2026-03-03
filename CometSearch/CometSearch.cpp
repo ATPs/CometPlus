@@ -796,7 +796,10 @@ bool CometSearch::RunSearch(int iPercentStart,
             // a memory issue for extremely large fasta files
             while (pSearchThreadPool->jobs_.size() >= 500)
             {
-               pSearchThreadPool->wait_on_threads();
+               if (g_staticParams.options.iNumThreads <= 1)
+                  pSearchThreadPool->wait_on_threads();
+               else
+                  pSearchThreadPool->wait_for_available_thread();
             }
 
             // Now search sequence entry; add threading here so that
@@ -1080,6 +1083,12 @@ void CometSearch::SearchThreadProc(SearchThreadData *pSearchThreadData, ThreadPo
       {
          break;
       }
+
+      // Release lock before yielding so other threads can return memory
+      // slots to the pool and avoid lock starvation.
+      Threading::UnlockMutex(g_searchMemoryPoolMutex);
+      std::this_thread::yield();
+      Threading::LockMutex(g_searchMemoryPoolMutex);
    }
    Threading::UnlockMutex(g_searchMemoryPoolMutex);
 

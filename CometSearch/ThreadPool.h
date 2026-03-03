@@ -115,6 +115,11 @@ public:
       fillPool(threads);
    }
 
+   ThreadPool(const ThreadPool&) = delete;
+   ThreadPool& operator=(const ThreadPool&) = delete;
+   ThreadPool(ThreadPool&&) = delete;
+   ThreadPool& operator=(ThreadPool&&) = delete;
+
    void fillPool(int threads)
    {
 
@@ -213,15 +218,34 @@ public:
 
    void wait_for_available_thread()
    {
+      static constexpr int MAX_YIELD_ATTEMPTS = 10;
+      static constexpr int MAX_SHORT_SLEEP_ATTEMPTS = 20;
+      static constexpr int MAX_BACKOFF_LEVEL = MAX_YIELD_ATTEMPTS + MAX_SHORT_SLEEP_ATTEMPTS;
+      int attempts = 0;
+
       this->LOCK(&countlock_);
       while(data_.size() > 0 && running_count_ >= (int)data_.size())
       {
          this->UNLOCK(&countlock_);
+
+         if (attempts < MAX_YIELD_ATTEMPTS)
+         {
 #ifdef _WIN32
-         SwitchToThread();
+            SwitchToThread();
 #else
-         sched_yield();
-#endif    
+            sched_yield();
+#endif
+         }
+         else if (attempts < MAX_BACKOFF_LEVEL)
+         {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+         }
+         else
+         {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+         }
+
+         attempts++;
          this->LOCK(&countlock_);
       }
       this->UNLOCK(&countlock_);
