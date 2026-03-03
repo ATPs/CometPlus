@@ -166,7 +166,7 @@ comet.params.new
 */*/test*/
 # ProtCosmo/CometPlus/multiple_input_db
 **/plan*.md
-**/design*.md
+
 ProtCosmo/CometPlus/cometplus*
 
 AGENTS.md
