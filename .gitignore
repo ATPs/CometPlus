@@ -163,8 +163,8 @@ ipch/
 *.msp
 comet.params.new
 
-# */*/test*
+*/*/test*/
 # ProtCosmo/CometPlus/multiple_input_db
-# plan.*md
-# design*.md
+**/plan*.md
+**/design*.md
 ProtCosmo/CometPlus/cometplus*
