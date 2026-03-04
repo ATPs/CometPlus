@@ -51,6 +51,7 @@
 using namespace CometInterfaces;
 
 static string g_sCometPlusExecutablePath;
+static bool g_bCometPlusKeepTempFiles = false;
 
 void Usage(char *pszCmd,
            bool bFullHelp = false,
@@ -64,6 +65,8 @@ void ProcessCmdLine(int argc,
                     vector<string> &vTempArtifacts);
 void PrintParams(int iPrintParams);
 bool ValidateInputFile(char *pszInputFileName);
+static void LogRetainedTempArtifacts(const vector<string>& vTempArtifacts,
+                                     const string& sMergedDatabasePath);
 
 
 int main(int argc, char *argv[])
@@ -102,13 +105,20 @@ int main(int argc, char *argv[])
 
    bSearchSucceeded = pCometSearchMgr->DoSearch();
 
-   if (!sMergedDatabasePath.empty())
-      remove(sMergedDatabasePath.c_str());
-
-   for (size_t i = 0; i < vTempArtifacts.size(); ++i)
+   if (g_bCometPlusKeepTempFiles)
    {
-      if (!vTempArtifacts.at(i).empty())
-         remove(vTempArtifacts.at(i).c_str());
+      LogRetainedTempArtifacts(vTempArtifacts, sMergedDatabasePath);
+   }
+   else
+   {
+      if (!sMergedDatabasePath.empty())
+         remove(sMergedDatabasePath.c_str());
+
+      for (size_t i = 0; i < vTempArtifacts.size(); ++i)
+      {
+         if (!vTempArtifacts.at(i).empty())
+            remove(vTempArtifacts.at(i).c_str());
+      }
    }
 
    CometInterfaces::ReleaseCometSearchManager();
@@ -156,6 +166,7 @@ void Usage(char *pszCmd,
    logout("                 --output_internal_novel_peptide <file> write internal novel peptide TSV\n");
    logout("                 --internal_novel_peptide <file> reuse internal novel peptide TSV input\n");
    logout("                 --stop-after-saving-novel-peptide stop after writing internal novel peptide TSV\n");
+   logout("                 --keep-tmp            keep temporary artifacts on exit for debugging\n");
    logout("                 --scan <file>          scan filter file; delimiters: comma/space/tab/newline\n");
    logout("                 --scan_numbers <list>  explicit scan list, e.g. 1001,1002,1003\n");
    logout("                 note: novel mode requires known DB via --database or params database_name\n");
@@ -559,6 +570,55 @@ static string GetLocalTimestampString()
    return szTime;
 }
 
+static const char* BoolToOnOffString(bool bValue)
+{
+   return bValue ? "on" : "off";
+}
+
+static void LogRetainedTempArtifacts(const vector<string>& vTempArtifacts,
+                                     const string& sMergedDatabasePath)
+{
+   vector<string> vRetained;
+   unordered_set<string> setSeen;
+
+   auto AddIfUnique = [&](const string& sPath)
+   {
+      if (sPath.empty())
+         return;
+      if (!setSeen.insert(sPath).second)
+         return;
+      vRetained.push_back(sPath);
+   };
+
+   AddIfUnique(sMergedDatabasePath);
+   for (size_t i = 0; i < vTempArtifacts.size(); ++i)
+      AddIfUnique(vTempArtifacts.at(i));
+
+   char szBuf[1024];
+   if (vRetained.empty())
+   {
+      snprintf(szBuf,
+               sizeof(szBuf),
+               " [%s] --keep-tmp enabled: no temporary artifacts were recorded.\n",
+               GetLocalTimestampString().c_str());
+      logout(szBuf);
+      return;
+   }
+
+   snprintf(szBuf,
+            sizeof(szBuf),
+            " [%s] --keep-tmp enabled: retained %zu temporary artifacts for debugging.\n",
+            GetLocalTimestampString().c_str(),
+            vRetained.size());
+   logout(szBuf);
+
+   for (size_t i = 0; i < vRetained.size(); ++i)
+   {
+      snprintf(szBuf, sizeof(szBuf), "   - %s\n", vRetained.at(i).c_str());
+      logout(szBuf);
+   }
+}
+
 static void LogStageTiming(const string& sStage,
                            const std::chrono::steady_clock::time_point& tStageStart,
                            const std::chrono::steady_clock::time_point& tProgramStart)
@@ -703,6 +763,7 @@ void ProcessCmdLine(int argc,
    vector<string> vInputArgs;
    vector<CmdParamOverride> vCliParamOverrides;
    NovelModeOptions novelOpts;
+   g_bCometPlusKeepTempFiles = false;
 
    for (int iArg = 1; iArg < argc; ++iArg)
    {
@@ -818,6 +879,16 @@ void ProcessCmdLine(int argc,
                exit(1);
             }
             novelOpts.bStopAfterSavingNovelPeptide = true;
+         }
+         else if (sName == "keep-tmp")
+         {
+            if (!sValue.empty())
+            {
+               string strErrorMsg = " Error - option --keep-tmp does not take a value.\n";
+               logerr(strErrorMsg);
+               exit(1);
+            }
+            g_bCometPlusKeepTempFiles = true;
          }
          else if (sName == "scan")
          {
@@ -1700,13 +1771,20 @@ void ProcessCmdLine(int argc,
                      GetLocalTimestampString().c_str());
             logout(szStopBuf);
 
-            for (size_t i = 0; i < vTempArtifacts.size(); ++i)
+            if (g_bCometPlusKeepTempFiles)
             {
-               if (!vTempArtifacts.at(i).empty())
-                  remove(vTempArtifacts.at(i).c_str());
+               LogRetainedTempArtifacts(vTempArtifacts, sMergedDatabasePath);
             }
-            if (!sMergedDatabasePath.empty())
-               remove(sMergedDatabasePath.c_str());
+            else
+            {
+               for (size_t i = 0; i < vTempArtifacts.size(); ++i)
+               {
+                  if (!vTempArtifacts.at(i).empty())
+                     remove(vTempArtifacts.at(i).c_str());
+               }
+               if (!sMergedDatabasePath.empty())
+                  remove(sMergedDatabasePath.c_str());
+            }
             exit(0);
          }
       }
@@ -1834,14 +1912,17 @@ void ProcessCmdLine(int argc,
    {
       pvInputFiles = vParsedInputs;
 
+      if (bCreateFragmentIndex || bCreatePeptideIndex)
+         return;
+
       char szSummary[1024];
       snprintf(szSummary,
                sizeof(szSummary),
-               " [%s] search launch summary: %zu input files, novel_mode=%d, explicit_scan_filter=%d, novel_masses=%zu\n",
+               " [%s] search setup: spectra_inputs=%zu, novel_mode=%s, explicit_scan_filter=%s, novel_mass_count=%zu\n",
                GetLocalTimestampString().c_str(),
                pvInputFiles.size(),
-               bNovelMode ? 1 : 0,
-               novelOpts.HasExplicitScanFilter() ? 1 : 0,
+               BoolToOnOffString(bNovelMode),
+               BoolToOnOffString(novelOpts.HasExplicitScanFilter()),
                vNovelMasses.size());
       logout(szSummary);
       return;
@@ -2095,23 +2176,23 @@ void ProcessCmdLine(int argc,
    {
       snprintf(szSummary,
                sizeof(szSummary),
-               " [%s] search launch summary: %zu input file (merged novel), source_parts=%zu, novel_mode=%d, explicit_scan_filter=%d, novel_masses=%zu\n",
+               " [%s] search setup: spectra_inputs=%zu (merged from %zu source files), novel_mode=%s, explicit_scan_filter=%s, novel_mass_count=%zu\n",
                GetLocalTimestampString().c_str(),
                pvInputFiles.size(),
                vPrefilterResults.size(),
-               bNovelMode ? 1 : 0,
-               novelOpts.HasExplicitScanFilter() ? 1 : 0,
+               BoolToOnOffString(bNovelMode),
+               BoolToOnOffString(novelOpts.HasExplicitScanFilter()),
                vNovelMasses.size());
    }
    else
    {
       snprintf(szSummary,
                sizeof(szSummary),
-               " [%s] search launch summary: %zu input files, novel_mode=%d, explicit_scan_filter=%d, novel_masses=%zu\n",
+               " [%s] search setup: spectra_inputs=%zu, novel_mode=%s, explicit_scan_filter=%s, novel_mass_count=%zu\n",
                GetLocalTimestampString().c_str(),
                pvInputFiles.size(),
-               bNovelMode ? 1 : 0,
-               novelOpts.HasExplicitScanFilter() ? 1 : 0,
+               BoolToOnOffString(bNovelMode),
+               BoolToOnOffString(novelOpts.HasExplicitScanFilter()),
                vNovelMasses.size());
    }
    logout(szSummary);

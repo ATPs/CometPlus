@@ -56,6 +56,10 @@ public:
                                     unsigned int *iNumTotProteins,   // matched protein count
                                     vector<string>& vProteinTargets,  // the target protein names
                                     vector<string>& vProteinDecoys);  // the decoy protein names if applicable
+   // In cometplus_novel_output_only mode:
+   // - no printable novel target PSM => false
+   // - all printable target PSM novel-only => true
+   // - mixed printable novel+known => true only when the best-Xcorr tie group is novel-only
    static bool QueryHasNovelTargetResult(FILE *fpdb,
                                          int iWhichQuery);
 

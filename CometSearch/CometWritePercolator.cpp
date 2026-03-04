@@ -21,9 +21,33 @@
 #include "CometStatus.h"
 #include <math.h>
 
+static std::string GetSpecIdFileStem(const std::string& sPathLike)
+{
+   if (sPathLike.empty())
+      return sPathLike;
+
+   size_t iSlashPos = sPathLike.find_last_of("/\\");
+   std::string sName = (iSlashPos == std::string::npos) ? sPathLike : sPathLike.substr(iSlashPos + 1);
+
+   size_t iDotPos = sName.find_last_of('.');
+   if (iDotPos != std::string::npos)
+      sName = sName.substr(0, iDotPos);
+
+   return sName;
+}
+
+static bool IsMgfPlaceholderTitleBase(const std::string& sBase)
+{
+   return (sBase.length() == 4
+         && (tolower((unsigned char)sBase[0]) == 't')
+         && (tolower((unsigned char)sBase[1]) == 'e')
+         && (tolower((unsigned char)sBase[2]) == 's')
+         && (tolower((unsigned char)sBase[3]) == 't'));
+}
+
 static std::string GetPercolatorSpecIdBase(const Query* pQuery)
 {
-   std::string sBase = g_staticParams.inputFile.szBaseName;
+   std::string sBase = GetSpecIdFileStem(g_staticParams.inputFile.szBaseName);
 
    if (!g_bCometPlusNovelOutputOnly || pQuery == NULL)
       return sBase;
@@ -35,7 +59,7 @@ static std::string GetPercolatorSpecIdBase(const Query* pQuery)
    size_t iDotPos = sNativeId.find('.');
    std::string sSourceBase = (iDotPos == std::string::npos) ? sNativeId : sNativeId.substr(0, iDotPos);
 
-   if (!sSourceBase.empty())
+   if (!sSourceBase.empty() && !IsMgfPlaceholderTitleBase(sSourceBase))
       return sSourceBase;
 
    return sBase;

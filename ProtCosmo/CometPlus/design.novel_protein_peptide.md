@@ -1,7 +1,7 @@
 # CometPlus Novel Protein/Peptide Design (Detailed)
 
 ## 1. Scope and Added Options
-CometPlus adds eight options in this design scope:
+CometPlus adds nine options in this design scope:
 
 1. `--novel_protein <file>`
 2. `--novel_peptide <file>`
@@ -11,6 +11,7 @@ CometPlus adds eight options in this design scope:
 6. `--output_internal_novel_peptide <file_internal_novel_peptide>`
 7. `--internal_novel_peptide <file_internal_novel_peptide>`
 8. `--stop-after-saving-novel-peptide`
+9. `--keep-tmp`
 
 Goal:
 
@@ -30,6 +31,7 @@ Goal:
 | `--output_internal_novel_peptide` | output file path | write internal TSV; no-dir path resolves to output-folder | No |
 | `--internal_novel_peptide` | TSV file path | load internal TSV and skip subtraction | Yes |
 | `--stop-after-saving-novel-peptide` | flag | requires `--output_internal_novel_peptide` | No |
+| `--keep-tmp` | flag | keep temporary artifacts on exit for debugging | Yes |
 
 Novel option combination:
 
@@ -452,10 +454,16 @@ In novel mode, all output writers apply query-level gate:
 
 Rule:
 
-1. A spectrum is retained only if at least one target-side printable PSM maps to `COMETPLUS_NOVEL_...`.
-2. Otherwise the whole spectrum is omitted from all outputs.
-3. With `decoy_search=2`, once a spectrum passes target-side gate, target and decoy sides are both kept for that spectrum.
-4. In merged novel mode, Percolator `SpecId` keeps `<base>_<scan>_<charge>_<rank>` style, but `base` is extracted from per-spectrum nativeID source tag (`TITLE` prefix) rather than a single global basename, preventing cross-input collisions.
+1. Define printable target PSM set as:
+   - `iWhichResult < min(iMatchPeptideCount, iNumPeptideOutputLines)`
+   - and `Xcorr > minimum_xcorr`.
+2. A spectrum is dropped if printable target PSMs contain no novel assignment (`COMETPLUS_NOVEL_...`).
+3. A spectrum is kept directly if printable target PSMs are all novel-only (no known assignment).
+4. For mixed printable target PSMs (novel + known), let `bestXcorr` be the maximum printable `Xcorr`:
+   - keep only if every PSM tied at `bestXcorr` is novel-only,
+   - drop if any `bestXcorr`-tied PSM includes a known assignment.
+5. With `decoy_search=2`, once a spectrum passes target-side gate, target and decoy sides are both kept for that spectrum.
+6. In merged novel mode, Percolator `SpecId` keeps `<base>_<scan>_<charge>_<rank>` style, but `base` is extracted from per-spectrum nativeID source tag (`TITLE` prefix) rather than a single global basename, preventing cross-input collisions.
 
 Non-novel mode behavior is unchanged.
 

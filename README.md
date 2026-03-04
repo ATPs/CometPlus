@@ -101,6 +101,7 @@ CometPlus adds:
 - `--novel_peptide <file>`: FASTA or tokenized text (auto-detected by `>` headers).
 - `--scan <file>`: scan IDs from file (comma/whitespace delimited).
 - `--scan_numbers <list>`: inline scan IDs (comma/whitespace delimited).
+- `--keep-tmp`: keep temporary artifacts on exit (debugging helper).
 
 High-level behavior when novel/scan options are used:
 1. Resolve known DB from `--database` (or params fallback).

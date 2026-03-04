@@ -201,6 +201,7 @@ This section documents design and usage for:
 - `--output_internal_novel_peptide <file>`
 - `--internal_novel_peptide <file>`
 - `--stop-after-saving-novel-peptide`
+- `--keep-tmp`
 
 These options are implemented as additive orchestration in CometPlus and preserve normal Comet behavior when not used.
 
@@ -237,6 +238,10 @@ These options are implemented as additive orchestration in CometPlus and preserv
 - `--stop-after-saving-novel-peptide`
   - Must be used with `--output_internal_novel_peptide`.
   - Workflow exits successfully after saving internal TSV and does not perform spectrum prefilter/search.
+
+- `--keep-tmp`
+  - Keeps CometPlus temporary artifacts on exit for debugging.
+  - By default (without this flag), temporary artifacts are removed on exit.
 
 - `--scan <file>`
   - File-based explicit scan list.
@@ -283,7 +288,11 @@ When any novel option or explicit scan option is used, CometPlus runs this flow:
 16. Search:
    - merged novel path: one search input (one output set),
    - otherwise: one search input per filtered file (legacy behavior).
-17. In novel mode, output files (`txt/sqt/pepXML/mzid/pin`) keep only spectra whose target-side printable PSMs include at least one `COMETPLUS_NOVEL_...` hit. With `decoy_search=2`, target and decoy records are retained/dropped together at spectrum level.
+17. In novel mode, output files (`txt/sqt/pepXML/mzid/pin`) keep only spectra that pass target-side printable PSM gate:
+   - no printable novel target PSM => drop spectrum,
+   - printable target PSM all novel-only => keep spectrum,
+   - printable target PSM mixed novel+known => keep only if every best-`Xcorr` tie is novel-only (no known assignment in best-score ties).
+   With `decoy_search=2`, target and decoy records are retained/dropped together at spectrum level.
 18. In merged novel mode, Percolator `SpecId` keeps `<base>_<scan>_<charge>_<rank>` format, but `base` is read from each spectrum nativeID source tag (instead of a global file basename) to prevent cross-input collisions.
 
 ### Input Validation and Error Conditions

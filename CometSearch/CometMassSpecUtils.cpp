@@ -397,6 +397,19 @@ bool CometMassSpecUtils::QueryHasNovelTargetResult(FILE *fpdb,
    if (iNumPrintLines > g_staticParams.options.iNumPeptideOutputLines)
       iNumPrintLines = g_staticParams.options.iNumPeptideOutputLines;
 
+   struct PsmNovelClass
+   {
+      float fXcorr;
+      bool bHasNovel;
+      bool bHasKnown;
+   };
+
+   std::vector<PsmNovelClass> vPrintablePsmClasses;
+   vPrintablePsmClasses.reserve(iNumPrintLines);
+
+   bool bAnyNovel = false;
+   bool bAnyKnown = false;
+
    for (int iWhichResult = 0; iWhichResult < iNumPrintLines; ++iWhichResult)
    {
       if (pQuery->_pResults[iWhichResult].fXcorr <= g_staticParams.options.dMinimumXcorr)
@@ -415,14 +428,64 @@ bool CometMassSpecUtils::QueryHasNovelTargetResult(FILE *fpdb,
                            vProteinTargets,
                            vProteinDecoys);
 
+      bool bHasNovel = false;
+      bool bHasKnown = false;
       for (auto it = vProteinTargets.begin(); it != vProteinTargets.end(); ++it)
       {
          if (!strncmp((*it).c_str(), "COMETPLUS_NOVEL_", 16))
-            return true;
+            bHasNovel = true;
+         else
+            bHasKnown = true;
+
+         if (bHasNovel && bHasKnown)
+            break;
+      }
+
+      if (bHasNovel)
+         bAnyNovel = true;
+      if (bHasKnown)
+         bAnyKnown = true;
+
+      PsmNovelClass psmClass = {};
+      psmClass.fXcorr = pQuery->_pResults[iWhichResult].fXcorr;
+      psmClass.bHasNovel = bHasNovel;
+      psmClass.bHasKnown = bHasKnown;
+      vPrintablePsmClasses.push_back(psmClass);
+   }
+
+   // No printable target PSM mapped to novel entries.
+   if (!bAnyNovel)
+      return false;
+
+   // All printable target PSM are novel-only.
+   if (!bAnyKnown)
+      return true;
+
+   // Mixed novel+known: keep only if every best-Xcorr tie is novel-only.
+   bool bHasBestXcorr = false;
+   float fBestXcorr = 0.0f;
+   for (auto it = vPrintablePsmClasses.begin(); it != vPrintablePsmClasses.end(); ++it)
+   {
+      if (!bHasBestXcorr || (*it).fXcorr > fBestXcorr)
+      {
+         fBestXcorr = (*it).fXcorr;
+         bHasBestXcorr = true;
       }
    }
 
-   return false;
+   if (!bHasBestXcorr)
+      return false;
+
+   for (auto it = vPrintablePsmClasses.begin(); it != vPrintablePsmClasses.end(); ++it)
+   {
+      if (isEqual((*it).fXcorr, fBestXcorr))
+      {
+         if (!((*it).bHasNovel && !(*it).bHasKnown))
+            return false;
+      }
+   }
+
+   return true;
 }
 
 
