@@ -114,3 +114,6 @@ At minimum before handing off:
    - use temporary `.mgf` only for spectrum reading,
    - remove temporary files at normal completion/handled failure paths.
 8. Defer remaining gzip-expansion work (`.ms2.gz`, broader strategy) unless explicitly reopened.
+
+# build cometplus
+check this file [build.md](ProtCosmo/CometPlus/build.md) 

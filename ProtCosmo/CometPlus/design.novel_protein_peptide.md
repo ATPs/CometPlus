@@ -23,6 +23,11 @@ Goal:
 | `--scan` | text file of scan integers | delimiters: comma or any whitespace | No |
 | `--scan_numbers` | inline scan list | same integer parser as `--scan` | No |
 
+Novel option combination:
+
+1. `--novel_protein` and `--novel_peptide` can be used together in one run.
+2. They can also be combined with `--scan` and/or `--scan_numbers`.
+
 Hard constraints:
 
 1. Any of `--novel_*` / `--scan*` requires at least one spectrum input file.
@@ -260,8 +265,14 @@ Example C: both explicit and novel
 3. Known DB type mixing (FASTA + `.idx`) is rejected.
 
 ### 8.2 Novel candidate sources
-1. `--novel_protein`: digest protein FASTA using current Comet settings.
-2. `--novel_peptide`: parse peptide input, materialize temp FASTA, build no-cut peptide index path.
+1. `--novel_protein`: digest protein FASTA using current Comet settings and extract peptide candidates from the generated peptide index.
+2. `--novel_peptide`: parse peptide input into peptide candidates (FASTA/text parsing only; no digestion step).
+
+### 8.2.1 Mixed `--novel_protein` + `--novel_peptide` flow
+1. CometPlus first adds peptide candidates from `--novel_protein`.
+2. Then it adds peptide candidates from `--novel_peptide`.
+3. Both sources are merged into one peptide-level map keyed by normalized peptide identity (`equal_I_and_L` aware), so overlap across the two sources is deduplicated before subtraction.
+4. Known-db subtraction runs once on the merged set, yielding one retained novel peptide set.
 
 ### 8.3 Subtraction key
 Comparison uses normalized peptide key with `equal_I_and_L` policy:
@@ -274,11 +285,12 @@ Retained novel set is candidates not found in known set under this policy.
 ### 8.4 Novel name generation and duplicate protein headers
 Name generation for novel entries:
 
-1. `--novel_peptide` FASTA headers are not preserved as final search protein names.
-2. Parsed peptide sequences are normalized and deduplicated, then written to temporary FASTA with synthetic headers:
+1. `--novel_protein` FASTA headers are used only in the intermediate digestion/indexing stage, not as final novel scoring entry names.
+2. `--novel_peptide` FASTA headers are also not preserved as final search protein names.
+3. After merged-set subtraction, retained novel peptides are written to one temporary FASTA with synthetic headers:
    `>COMETPLUS_NOVEL_<n>`.
-3. The retained novel scoring database (after subtraction) is also written with `COMETPLUS_NOVEL_<n>` headers.
-4. Result: novel-side protein names come from synthetic `COMETPLUS_NOVEL_<n>` entries, not from peptide sequences and not from original `--novel_peptide` FASTA header text.
+4. The retained novel scoring database (after subtraction) is the same `COMETPLUS_NOVEL_<n>`-header FASTA (or its `.idx` form, when known DB input is `.idx`).
+5. Result: every retained novel peptide from either `--novel_protein` or `--novel_peptide` is represented as `COMETPLUS_NOVEL_<n>` on the novel side.
 
 Duplicate protein header behavior in `--novel_protein` input:
 
