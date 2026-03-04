@@ -123,6 +123,15 @@ void MSReader::appendFile(char* c, Spectrum& s){
 
 }
 
+void MSReader::appendMGFFileHandle(FILE* fileOut, Spectrum& s){
+  if(fileOut==NULL) return;
+
+  bool bExportMGF = exportMGF;
+  exportMGF = true;
+  writeTextSpec(fileOut, s);
+  exportMGF = bExportMGF;
+}
+
 void MSReader::appendFile(char* c, bool text, MSObject& m){
 
   FILE* fileOut;
@@ -1924,4 +1933,3 @@ MSFileFormat MSReader::checkFileFormat(const char *fn){
   return dunno;
 
 }
-

@@ -860,8 +860,58 @@ void ProcessCmdLine(int argc,
          exit(1);
       }
 
+      auto BuildNoVarModOverrides = []() -> map<string, string>
+      {
+         map<string, string> mOverrides;
+         mOverrides["max_variable_mods_in_peptide"] = "0";
+         mOverrides["require_variable_mod"] = "0";
+         for (int iMod = 1; iMod <= 15; ++iMod)
+         {
+            char szParamName[32];
+            snprintf(szParamName, sizeof(szParamName), "variable_mod%02d", iMod);
+            mOverrides[szParamName] = "0.0 X 0 3 -1 0 0 0.0";
+         }
+         return mOverrides;
+      };
+
+      int iNoCutEnzyme = -1;
+      {
+         string sErrorMsg;
+         if (!FindNoCutEnzymeNumber(sParamsFile, iNoCutEnzyme, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+      }
+
+      auto BuildNoCutOverrides = [&](bool bDisableVarMods) -> map<string, string>
+      {
+         map<string, string> mOverrides;
+         mOverrides["search_enzyme_number"] = std::to_string(iNoCutEnzyme);
+         mOverrides["search_enzyme2_number"] = "0";
+         mOverrides["allowed_missed_cleavage"] = "0";
+         mOverrides["num_enzyme_termini"] = "2";
+         if (bDisableVarMods)
+         {
+            map<string, string> mNoVarMods = BuildNoVarModOverrides();
+            mOverrides.insert(mNoVarMods.begin(), mNoVarMods.end());
+         }
+         return mOverrides;
+      };
+
+      string sTmpNoVarModParams;
+      {
+         string sErrorMsg;
+         map<string, string> mNoVarOverrides = BuildNoVarModOverrides();
+         if (!BuildTemporaryParamsFile(sParamsFile, mNoVarOverrides, sTmpNoVarModParams, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+         vTempArtifacts.push_back(sTmpNoVarModParams);
+      }
+
       set<string> setKnownPeptides;
-      vector<PeptideMassEntry> vKnownEntries;
       for (size_t iDb = 0; iDb < vKnownDatabases.size(); ++iDb)
       {
          const string& sDb = vKnownDatabases.at(iDb);
@@ -905,7 +955,7 @@ void ProcessCmdLine(int argc,
             }
             vTempArtifacts.push_back(sTmpFasta);
 
-            if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sParamsFile, sTmpFasta, false, sErrorMsg))
+            if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sTmpNoVarModParams, sTmpFasta, false, sErrorMsg))
             {
                logerr(sErrorMsg);
                exit(1);
@@ -920,17 +970,20 @@ void ProcessCmdLine(int argc,
             }
          }
 
-         vKnownEntries.insert(vKnownEntries.end(), vEntries.begin(), vEntries.end());
+         for (size_t i = 0; i < vEntries.size(); ++i)
+         {
+            string sKey = NormalizePeptideForCompare(vEntries.at(i).sPeptide, bTreatSameIL);
+            if (!sKey.empty())
+               setKnownPeptides.insert(sKey);
+         }
       }
 
-      for (size_t i = 0; i < vKnownEntries.size(); ++i)
+      struct NovelCandidateAggregate
       {
-         string sKey = NormalizePeptideForCompare(vKnownEntries.at(i).sPeptide, bTreatSameIL);
-         if (!sKey.empty())
-            setKnownPeptides.insert(sKey);
-      }
+         string sRepresentativePeptide;
+      };
 
-      vector<PeptideMassEntry> vNovelEntries;
+      unordered_map<string, NovelCandidateAggregate> mNovelCandidates;
 
       if (!novelOpts.sNovelProteinPath.empty())
       {
@@ -943,7 +996,7 @@ void ProcessCmdLine(int argc,
          }
          vTempArtifacts.push_back(sTmpNovelProtein);
 
-         if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sParamsFile, sTmpNovelProtein, false, sErrorMsg))
+         if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sTmpNoVarModParams, sTmpNovelProtein, false, sErrorMsg))
          {
             logerr(sErrorMsg);
             exit(1);
@@ -957,7 +1010,21 @@ void ProcessCmdLine(int argc,
             logerr(sErrorMsg);
             exit(1);
          }
-         vNovelEntries.insert(vNovelEntries.end(), vTmp.begin(), vTmp.end());
+
+         for (size_t i = 0; i < vTmp.size(); ++i)
+         {
+            string sNormPep = NormalizePeptideToken(vTmp.at(i).sPeptide);
+            string sKey = NormalizePeptideForCompare(sNormPep, bTreatSameIL);
+            if (sKey.empty())
+               continue;
+
+            if (mNovelCandidates.find(sKey) == mNovelCandidates.end())
+            {
+               NovelCandidateAggregate agg;
+               agg.sRepresentativePeptide = sNormPep;
+               mNovelCandidates[sKey] = agg;
+            }
+         }
       }
 
       if (!novelOpts.sNovelPeptidePath.empty())
@@ -977,83 +1044,25 @@ void ProcessCmdLine(int argc,
             exit(1);
          }
 
-         string sTmpNovelPeptideFasta;
-         if (!WritePeptidesToFasta(vInputPeptides, "cometplus_novel_peptide_input", sTmpNovelPeptideFasta, sErrorMsg))
+         for (size_t i = 0; i < vInputPeptides.size(); ++i)
          {
-            logerr(sErrorMsg);
-            exit(1);
+            string sNormPep = NormalizePeptideToken(vInputPeptides.at(i));
+            string sKey = NormalizePeptideForCompare(sNormPep, bTreatSameIL);
+            if (sKey.empty())
+               continue;
+
+            if (mNovelCandidates.find(sKey) == mNovelCandidates.end())
+            {
+               NovelCandidateAggregate agg;
+               agg.sRepresentativePeptide = sNormPep;
+               mNovelCandidates[sKey] = agg;
+            }
          }
-         vTempArtifacts.push_back(sTmpNovelPeptideFasta);
-
-         map<string, string> mOverrides;
-         int iNoCutEnzyme = -1;
-         if (!FindNoCutEnzymeNumber(sParamsFile, iNoCutEnzyme, sErrorMsg))
-         {
-            logerr(sErrorMsg);
-            exit(1);
-         }
-         mOverrides["search_enzyme_number"] = std::to_string(iNoCutEnzyme);
-         mOverrides["search_enzyme2_number"] = "0";
-         mOverrides["allowed_missed_cleavage"] = "0";
-         mOverrides["num_enzyme_termini"] = "2";
-
-         string sTmpNoCutParams;
-         if (!BuildTemporaryParamsFile(sParamsFile, mOverrides, sTmpNoCutParams, sErrorMsg))
-         {
-            logerr(sErrorMsg);
-            exit(1);
-         }
-         vTempArtifacts.push_back(sTmpNoCutParams);
-
-         if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sTmpNoCutParams, sTmpNovelPeptideFasta, false, sErrorMsg))
-         {
-            logerr(sErrorMsg);
-            exit(1);
-         }
-         string sTmpNovelPeptideIdx = sTmpNovelPeptideFasta + ".idx";
-         vTempArtifacts.push_back(sTmpNovelPeptideIdx);
-
-         vector<PeptideMassEntry> vTmp;
-         if (!ParsePeptideIdxEntries(sTmpNovelPeptideIdx, vTmp, sErrorMsg))
-         {
-            logerr(sErrorMsg);
-            exit(1);
-         }
-
-         for (size_t i = 0; i < vTmp.size(); ++i)
-            vTmp.at(i).bDecoy = false;
-
-         vNovelEntries.insert(vNovelEntries.end(), vTmp.begin(), vTmp.end());
-      }
-
-      struct NovelAggregate
-      {
-         string sRepresentativePeptide;
-         vector<double> vMasses;
-      };
-
-      unordered_map<string, NovelAggregate> mNovelAggregates;
-      for (size_t i = 0; i < vNovelEntries.size(); ++i)
-      {
-         string sKey = NormalizePeptideForCompare(vNovelEntries.at(i).sPeptide, bTreatSameIL);
-         if (sKey.empty())
-            continue;
-
-         if (mNovelAggregates.find(sKey) == mNovelAggregates.end())
-         {
-            NovelAggregate agg;
-            agg.sRepresentativePeptide = vNovelEntries.at(i).sPeptide;
-            mNovelAggregates[sKey] = agg;
-         }
-
-         if (vNovelEntries.at(i).dMass > 0.0)
-            mNovelAggregates[sKey].vMasses.push_back(vNovelEntries.at(i).dMass);
       }
 
       vector<string> vRemainingNovelPeptides;
-      set<double> setNovelMasses;
       int iSubtractedCount = 0;
-      for (auto it = mNovelAggregates.begin(); it != mNovelAggregates.end(); ++it)
+      for (auto it = mNovelCandidates.begin(); it != mNovelCandidates.end(); ++it)
       {
          if (setKnownPeptides.find(it->first) != setKnownPeptides.end())
          {
@@ -1062,20 +1071,16 @@ void ProcessCmdLine(int argc,
          }
 
          vRemainingNovelPeptides.push_back(it->second.sRepresentativePeptide);
-         for (size_t i = 0; i < it->second.vMasses.size(); ++i)
-            setNovelMasses.insert(it->second.vMasses.at(i));
       }
 
       std::sort(vRemainingNovelPeptides.begin(), vRemainingNovelPeptides.end());
       vRemainingNovelPeptides.erase(std::unique(vRemainingNovelPeptides.begin(), vRemainingNovelPeptides.end()),
                                     vRemainingNovelPeptides.end());
 
-      vNovelMasses.assign(setNovelMasses.begin(), setNovelMasses.end());
-
       char szLogBuf[512];
       snprintf(szLogBuf, sizeof(szLogBuf),
                " Novel mode: %zu unique novel peptides parsed, %d removed by known-db subtraction, %zu retained.\n",
-               mNovelAggregates.size(),
+               mNovelCandidates.size(),
                iSubtractedCount,
                vRemainingNovelPeptides.size());
       logout(szLogBuf);
@@ -1095,6 +1100,39 @@ void ProcessCmdLine(int argc,
             exit(1);
          }
          vTempArtifacts.push_back(sNovelFastaPath);
+
+         map<string, string> mNoCutOverrides = BuildNoCutOverrides(false);
+         string sTmpNoCutParams;
+         if (!BuildTemporaryParamsFile(sParamsFile, mNoCutOverrides, sTmpNoCutParams, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+         vTempArtifacts.push_back(sTmpNoCutParams);
+
+         if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sTmpNoCutParams, sNovelFastaPath, false, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+
+         string sTmpNovelMassIdx = sNovelFastaPath + ".idx";
+         vTempArtifacts.push_back(sTmpNovelMassIdx);
+
+         vector<PeptideMassEntry> vNovelMassEntries;
+         if (!ParsePeptideIdxEntries(sTmpNovelMassIdx, vNovelMassEntries, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+
+         set<double> setNovelMasses;
+         for (size_t i = 0; i < vNovelMassEntries.size(); ++i)
+         {
+            if (vNovelMassEntries.at(i).dMass > 0.0)
+               setNovelMasses.insert(vNovelMassEntries.at(i).dMass);
+         }
+         vNovelMasses.assign(setNovelMasses.begin(), setNovelMasses.end());
 
          if (bKnownAllIdx)
          {

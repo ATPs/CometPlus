@@ -65,12 +65,13 @@ class MSReader {
 
   //Functions
 	void addFilter(MSSpectrumType m);
-  void appendFile(char* c, bool text, Spectrum& s);
-  void appendFile(char* c, bool text, MSObject& m);
-  void appendFile(char* c, Spectrum& s);
-  void appendFile(char* c, MSObject& m);
-  
-  MSFileFormat checkFileFormat(const char *fn);
+	  void appendFile(char* c, bool text, Spectrum& s);
+	  void appendFile(char* c, bool text, MSObject& m);
+	  void appendFile(char* c, Spectrum& s);
+	  void appendFile(char* c, MSObject& m);
+	  void appendMGFFileHandle(FILE* fileOut, Spectrum& s);
+	  
+	  MSFileFormat checkFileFormat(const char *fn);
 
   std::string          getCurrentFile();
   MSSpectrumType  getFileType();

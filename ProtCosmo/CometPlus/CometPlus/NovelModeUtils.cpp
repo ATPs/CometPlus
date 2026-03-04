@@ -1184,7 +1184,6 @@ bool FilterInputFileToTempMgf(const InputFileInfo& inputFile,
       sErrorMsg = " Error - cannot create temporary filtered spectrum file \"" + sOutTempMgfPath + "\".\n";
       return false;
    }
-   fclose(fpOut);
 
    vector<double> vSortedNovelMasses = vNovelMasses;
    std::sort(vSortedNovelMasses.begin(), vSortedNovelMasses.end());
@@ -1377,7 +1376,7 @@ bool FilterInputFileToTempMgf(const InputFileInfo& inputFile,
 
          if (bPassExplicit && PassNovelMassPlausibility(spec))
          {
-            mstReader.appendFile((char*)sOutTempMgfPath.c_str(), spec);
+            mstReader.appendMGFFileHandle(fpOut, spec);
             iNumScansKept++;
          }
       }
@@ -1385,5 +1384,6 @@ bool FilterInputFileToTempMgf(const InputFileInfo& inputFile,
       bRead = mstReader.readFile(NULL, spec);
    }
 
+   fclose(fpOut);
    return true;
 }
