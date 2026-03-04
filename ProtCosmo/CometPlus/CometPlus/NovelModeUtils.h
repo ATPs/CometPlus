@@ -22,6 +22,7 @@
 #include <set>
 #include <vector>
 #include <string>
+#include <utility>
 
 struct NovelModeOptions
 {
@@ -159,6 +160,17 @@ bool FilterInputFileToTempMgf(const InputFileInfo& inputFile,
                               string& sOutTempMgfPath,
                               int& iNumScansKept,
                               string& sErrorMsg);
+bool BuildNovelMergedSourceLabel(size_t iOneBasedIndex,
+                                 const string& sInputStem,
+                                 string& sOutLabel,
+                                 string& sErrorMsg);
+bool RewriteMgfTitleWithSourceLabel(const string& sTitleLine,
+                                    const string& sSourceLabel,
+                                    string& sOutTitleLine);
+bool MergeFilteredMgfFilesWithSourceTag(
+      const vector<std::pair<string, string>>& vFilteredMgfAndSourceLabel,
+      string& sOutMergedMgfPath,
+      string& sErrorMsg);
 string NormalizePeptideForCompare(const string& sPeptide, bool bTreatSameIL);
 string NormalizePeptideToken(const string& sToken);
 string ComputeInputBaseName(const string& sInputPath);

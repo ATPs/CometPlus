@@ -221,6 +221,7 @@ These options are implemented as additive orchestration in CometPlus and preserv
   - Default: current directory (`.`).
   - All normal search outputs are routed here (instead of input spectrum directories).
   - CometPlus temporary artifacts used by novel/scan workflows are also created under this directory.
+  - In novel mode with multiple spectrum inputs, filtered MGF shards are merged and searched once; default merged output base is `<output-folder>/cometplus_novel_merged` unless `--name` is provided.
 
 - `--output_internal_novel_peptide <file>`
   - Exports subtraction result as internal TSV (`peptide`, `peptide_id`, `protein_id`).
@@ -275,11 +276,15 @@ When any novel option or explicit scan option is used, CometPlus runs this flow:
 11. Materialize retained novel peptides as temporary scoring DB input and append to known DB list.
 12. Parse explicit scans from `--scan_numbers` and `--scan`, union and deduplicate.
 13. Intersect explicit scans with any scan-range constraint (`-F/-L` or `--first-scan/--last-scan`).
-14. Filter spectra into temporary MGF files:
+14. Filter spectra into temporary MGF files (parallel workers based on `--thread` or `num_threads`):
    - by explicit scan set if provided,
    - and, in novel mode, by precursor-mass plausibility against retained novel peptide masses.
-15. Search only filtered spectra.
-16. In novel mode, output files (`txt/sqt/pepXML/mzid/pin`) keep only spectra whose target-side printable PSMs include at least one `COMETPLUS_NOVEL_...` hit. With `decoy_search=2`, target and decoy records are retained/dropped together at spectrum level.
+15. If novel mode has more than one spectrum input, merge filtered MGFs into one temporary MGF with per-spectrum source tags in `TITLE=` (`S<index>_<sanitized_input_stem>`).
+16. Search:
+   - merged novel path: one search input (one output set),
+   - otherwise: one search input per filtered file (legacy behavior).
+17. In novel mode, output files (`txt/sqt/pepXML/mzid/pin`) keep only spectra whose target-side printable PSMs include at least one `COMETPLUS_NOVEL_...` hit. With `decoy_search=2`, target and decoy records are retained/dropped together at spectrum level.
+18. In merged novel mode, Percolator `SpecId` keeps `<base>_<scan>_<charge>_<rank>` format, but `base` is read from each spectrum nativeID source tag (instead of a global file basename) to prevent cross-input collisions.
 
 ### Input Validation and Error Conditions
 
@@ -292,6 +297,7 @@ When any novel option or explicit scan option is used, CometPlus runs this flow:
 - `--internal_novel_peptide` cannot be combined with `--novel_protein` or `--novel_peptide`.
 - `--stop-after-saving-novel-peptide` requires `--output_internal_novel_peptide`.
 - When `--name` and `--output-folder` are both specified, `--name` must be a base name (no path separators).
+- `--name` with multiple spectrum inputs is accepted only for merged multi-input novel mode; otherwise it remains single-input only.
 
 ### Usage Examples
 
@@ -340,6 +346,17 @@ Combined novel protein + novel peptide + dual scan sources:
   --last-scan 6000 \
   --name run_novel_scan_subset \
   /path/to/input.mzMLb
+```
+
+Multi-input novel mode (parallel prefilter + merged single search):
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known.idx \
+  --output-folder /path/to/out \
+  --novel_protein /path/to/novel_proteins.fasta \
+  --name merged_run \
+  /path/to/input_a.mzMLb /path/to/input_b.mzMLb
 ```
 
 Export internal novel TSV and stop before search:

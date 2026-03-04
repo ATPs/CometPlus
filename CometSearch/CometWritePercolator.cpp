@@ -16,9 +16,30 @@
 #include "Common.h"
 #include "CometDataInternal.h"
 #include "CometMassSpecUtils.h"
+#include "CometPlusMultiDB.h"
 #include "CometWritePercolator.h"
 #include "CometStatus.h"
 #include <math.h>
+
+static std::string GetPercolatorSpecIdBase(const Query* pQuery)
+{
+   std::string sBase = g_staticParams.inputFile.szBaseName;
+
+   if (!g_bCometPlusNovelOutputOnly || pQuery == NULL)
+      return sBase;
+
+   if (pQuery->_spectrumInfoInternal.szNativeID[0] == '\0')
+      return sBase;
+
+   std::string sNativeId = pQuery->_spectrumInfoInternal.szNativeID;
+   size_t iDotPos = sNativeId.find('.');
+   std::string sSourceBase = (iDotPos == std::string::npos) ? sNativeId : sNativeId.substr(0, iDotPos);
+
+   if (!sSourceBase.empty())
+      return sSourceBase;
+
+   return sBase;
+}
 
 
 CometWritePercolator::CometWritePercolator()
@@ -123,8 +144,9 @@ bool CometWritePercolator::PrintResults(int iWhichQuery,
       if (pOutput[iWhichResult].fXcorr <= g_staticParams.options.dMinimumXcorr)
          continue;
 
+      std::string sSpecIdBase = GetPercolatorSpecIdBase(pQuery);
       fprintf(fpout, "%s_%d_%d_%d\t",    // id
-            g_staticParams.inputFile.szBaseName,
+            sSpecIdBase.c_str(),
             pQuery->_spectrumInfoInternal.iScanNumber,
             pQuery->_spectrumInfoInternal.usiChargeState,
             iWhichResult+1);

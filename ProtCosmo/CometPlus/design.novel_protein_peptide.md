@@ -47,7 +47,8 @@ Hard constraints:
 7. `--internal_novel_peptide` is mutually exclusive with `--novel_protein` and `--novel_peptide`.
 8. `--stop-after-saving-novel-peptide` requires `--output_internal_novel_peptide`.
 9. If `--name` and `--output-folder` are both set, `--name` must not contain path separators.
-10. Spectrum input can be omitted only in stop-after mode.
+10. `--name` with multiple spectrum inputs is allowed only in merged multi-input novel mode (`novelMode && input_count > 1`); otherwise it remains single-input only.
+11. Spectrum input can be omitted only in stop-after mode.
 
 ## 3. `--novel_peptide`: FASTA vs Tokenized Text
 
@@ -210,10 +211,19 @@ Effective explicit scan candidates become:
 ### 7.1 When prefiltering is enabled
 Prefilter runs if either condition is true:
 
-1. Novel mode active (`--novel_protein` or `--novel_peptide`).
+1. Novel mode active (`--novel_protein` or `--novel_peptide` or `--internal_novel_peptide`).
 2. Explicit scan filter active (`--scan` or `--scan_numbers`).
 
-Each input is converted to a temporary filtered MGF and search runs on that subset.
+Execution modes:
+
+1. Non-novel or single-input novel:
+   - each input is filtered to one temporary MGF,
+   - search still runs per filtered input (legacy behavior).
+2. Multi-input novel (`novelMode && input_count > 1`):
+   - filtered MGF generation runs in parallel workers,
+   - per-input filtered MGFs are merged into one temporary MGF,
+   - merged `TITLE` prefixes use source labels `S<1-based-index>_<sanitized_input_stem>`,
+   - search runs once on the merged file.
 
 ### 7.2 Keep/drop logic per spectrum
 A spectrum is kept only if all required checks pass:
@@ -357,12 +367,17 @@ The two sources are unioned first, then intersected by range constraints and opt
 
 ### 11.1 `--output-folder` routing
 1. Default output folder is current directory (`.`).
-2. CometPlus rewrites each input basename to `<output-folder>/<input-stem>`.
-3. If `--name` is used (single-input mode), basename is `<output-folder>/<name>`.
+2. Default basename behavior:
+   - non-merged mode: each input basename is `<output-folder>/<input-stem>`,
+   - single-input `--name`: `<output-folder>/<name>`.
+3. Multi-input novel merged mode effective basename:
+   - `--name` set: `<output-folder>/<name>`,
+   - otherwise: `<output-folder>/cometplus_novel_merged`.
 4. Result: output files are no longer written to input spectrum directories.
+5. Merged novel mode writes one output file per enabled format (not one per original input).
 
 ### 11.2 Planned output conflict detection
-Before search starts, CometPlus computes all planned outputs for each input:
+Before search starts, CometPlus computes all planned outputs from effective output bases:
 
 1. `sqt`
 2. `txt` (with configured text extension)
@@ -378,6 +393,11 @@ Then two checks run:
 2. Existing files already on disk.
 
 Any collision prints a conflict list and exits before search/prefilter.
+
+Merged novel note:
+
+1. Multi-input merged novel mode uses one effective output base for collision planning.
+2. This avoids false-positive internal conflicts from repeated original input stems while still catching real path collisions and existing files on disk.
 
 ## 12. Internal Novel Peptide TSV (Export And Reuse)
 
@@ -435,6 +455,7 @@ Rule:
 1. A spectrum is retained only if at least one target-side printable PSM maps to `COMETPLUS_NOVEL_...`.
 2. Otherwise the whole spectrum is omitted from all outputs.
 3. With `decoy_search=2`, once a spectrum passes target-side gate, target and decoy sides are both kept for that spectrum.
+4. In merged novel mode, Percolator `SpecId` keeps `<base>_<scan>_<charge>_<rank>` style, but `base` is extracted from per-spectrum nativeID source tag (`TITLE` prefix) rather than a single global basename, preventing cross-input collisions.
 
 Non-novel mode behavior is unchanged.
 
@@ -459,7 +480,8 @@ CometPlus logs timestamped stage messages with elapsed seconds for major steps:
 3. subtraction
 4. internal TSV import/export
 5. novel mass calculation
-6. per-input scan prefilter and total prefilter time
-7. search launch summary
+6. scan prefilter parallel summary + per-input retained scans/time
+7. filtered MGF merge stage (multi-input novel only)
+8. search launch summary
 
-Observed thread behavior (`--thread 1` vs `--thread 20`) can be close in novel workflows because large portions of runtime are outside main search threads (index generation subprocesses, I/O, single-thread prefilter). Thread override is now forwarded to temporary index-generation subprocesses to reduce this gap.
+Observed thread behavior (`--thread 1` vs `--thread 20`) can still be close when non-search stages dominate, but multi-input novel prefilter now scales with worker parallelism because this stage is no longer single-thread serialized.

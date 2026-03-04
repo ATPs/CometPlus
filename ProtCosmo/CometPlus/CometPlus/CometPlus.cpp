@@ -38,6 +38,9 @@
 #include <sstream>
 #include <iterator>
 #include <functional>
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <sys/stat.h>
 #ifndef _WIN32
 #include <unistd.h>
@@ -143,7 +146,7 @@ void Usage(char *pszCmd,
    logout("                 -q         to print out a comet.params.new file with more parameter entries\n");
    logout("                 -P<params> to specify an alternate parameters file (default comet.params)\n");
    logout("                 --params <params>      alias for -P<params>\n");
-   logout("                 -N<name>   to specify an alternate output base name; valid only with one input file\n");
+   logout("                 -N<name>   to specify an alternate output base name; valid for one input, or merged multi-input novel mode\n");
    logout("                 --name <name>          alias for -N<name>\n");
    logout("                 -D<dbase>  to specify a sequence database, overriding entry in parameters file\n");
    logout("                 --database <dbase>     repeatable; supports multi FASTA or multi .idx\n");
@@ -1142,17 +1145,42 @@ void ProcessCmdLine(int argc,
       vParsedInputs.push_back(pInputFileInfo);
    }
 
-   if (bSetOutputName && vParsedInputs.size() != 1)
+   const bool bNovelMode = novelOpts.HasNovelMode();
+   const bool bUseNovelMergedSearch = (bNovelMode && vParsedInputs.size() > 1);
+
+   if (bSetOutputName && vParsedInputs.size() != 1 && !bUseNovelMergedSearch)
    {
       string strErrorMsg = " Error - --name/-N can be used only when one input spectrum file is provided.\n";
       logerr(strErrorMsg);
       exit(1);
    }
 
+   string sNovelMergedOutputBase;
+   if (bUseNovelMergedSearch)
+   {
+      string sMergedBaseStem = bSetOutputName ? sOutputName : "cometplus_novel_merged";
+      if (sMergedBaseStem.empty())
+      {
+         string strErrorMsg = " Error - cannot derive merged output basename for novel multi-input search.\n";
+         logerr(strErrorMsg);
+         exit(1);
+      }
+
+      sNovelMergedOutputBase = JoinPathLocal(novelOpts.sOutputFolder, sMergedBaseStem);
+      if (sNovelMergedOutputBase.length() >= SIZE_FILE)
+      {
+         string strErrorMsg = " Error - output basename path is too long: \"" + sNovelMergedOutputBase + "\".\n";
+         logerr(strErrorMsg);
+         exit(1);
+      }
+   }
+
    for (size_t i = 0; i < vParsedInputs.size(); ++i)
    {
       string sInputBaseStem;
-      if (bSetOutputName)
+      if (bUseNovelMergedSearch)
+         sInputBaseStem = ComputeInputBaseName(vParsedInputs.at(i)->szFileName);
+      else if (bSetOutputName)
          sInputBaseStem = sOutputName;
       else
          sInputBaseStem = ComputeInputBaseName(vParsedInputs.at(i)->szFileName);
@@ -1208,11 +1236,36 @@ void ProcessCmdLine(int argc,
 
    if (!(bCreateFragmentIndex || bCreatePeptideIndex))
    {
-      vector<string> vPlannedOutputs;
-      for (size_t i = 0; i < vParsedInputs.size(); ++i)
+      struct PlannedOutputInput
       {
-         AppendPlannedOutputFilesForInput(*vParsedInputs.at(i),
-                                          vParsedInputs.at(i)->szBaseName,
+         InputFileInfo inputInfo;
+         string sBaseName;
+      };
+
+      vector<PlannedOutputInput> vPlannedOutputInputs;
+      if (bUseNovelMergedSearch)
+      {
+         PlannedOutputInput mergedOutputInput;
+         mergedOutputInput.inputInfo.iAnalysisType = AnalysisType_EntireFile;
+         mergedOutputInput.sBaseName = sNovelMergedOutputBase;
+         vPlannedOutputInputs.push_back(mergedOutputInput);
+      }
+      else
+      {
+         for (size_t i = 0; i < vParsedInputs.size(); ++i)
+         {
+            PlannedOutputInput outputInput;
+            outputInput.inputInfo = *vParsedInputs.at(i);
+            outputInput.sBaseName = vParsedInputs.at(i)->szBaseName;
+            vPlannedOutputInputs.push_back(outputInput);
+         }
+      }
+
+      vector<string> vPlannedOutputs;
+      for (size_t i = 0; i < vPlannedOutputInputs.size(); ++i)
+      {
+         AppendPlannedOutputFilesForInput(vPlannedOutputInputs.at(i).inputInfo,
+                                          vPlannedOutputInputs.at(i).sBaseName,
                                           sOutputSuffix,
                                           sTxtExt,
                                           bOutputSqtFile,
@@ -1771,9 +1824,12 @@ void ProcessCmdLine(int argc,
          vTempArtifacts.push_back(sMergedDatabasePath);
    }
 
-   CometPlusSetNovelOutputOnly(novelOpts.HasNovelMode());
+   char szNovelOutputOnlyParam[32];
+   snprintf(szNovelOutputOnlyParam, sizeof(szNovelOutputOnlyParam), "%d", bNovelMode ? 1 : 0);
+   pSearchMgr->SetParam("cometplus_novel_output_only", szNovelOutputOnlyParam, bNovelMode ? 1 : 0);
+   CometPlusSetNovelOutputOnly(bNovelMode);
 
-   bool bNeedScanPrefilter = novelOpts.HasNovelMode() || novelOpts.HasExplicitScanFilter();
+   bool bNeedScanPrefilter = bNovelMode || novelOpts.HasExplicitScanFilter();
    if (!bNeedScanPrefilter)
    {
       pvInputFiles = vParsedInputs;
@@ -1784,7 +1840,7 @@ void ProcessCmdLine(int argc,
                " [%s] search launch summary: %zu input files, novel_mode=%d, explicit_scan_filter=%d, novel_masses=%zu\n",
                GetLocalTimestampString().c_str(),
                pvInputFiles.size(),
-               novelOpts.HasNovelMode() ? 1 : 0,
+               bNovelMode ? 1 : 0,
                novelOpts.HasExplicitScanFilter() ? 1 : 0,
                vNovelMasses.size());
       logout(szSummary);
@@ -1814,7 +1870,7 @@ void ProcessCmdLine(int argc,
    NovelMassFilterContext novelMassCtx = {};
    if (!pSearchMgr->GetParamValue("ms_level", novelMassCtx.iMSLevel))
       novelMassCtx.iMSLevel = 2;
-   if (novelOpts.HasNovelMode())
+   if (bNovelMode)
    {
       if (!BuildNovelMassFilterContext(pSearchMgr, novelMassCtx, sErrorMsg))
       {
@@ -1823,62 +1879,241 @@ void ProcessCmdLine(int argc,
       }
    }
 
-   auto tPrefilterStart = std::chrono::steady_clock::now();
-   for (size_t i = 0; i < vParsedInputs.size(); ++i)
+   struct PrefilterResult
    {
-      InputFileInfo* pInputFileInfo = vParsedInputs.at(i);
-      string sOriginalPath = pInputFileInfo->szFileName;
-      string sOutputBaseName = pInputFileInfo->szBaseName;
-
-      auto tInputPrefilterStart = std::chrono::steady_clock::now();
+      string sOriginalPath;
+      string sOutputBaseName;
       string sTempMgfPath;
       int iNumScansKept = 0;
-      if (!FilterInputFileToTempMgf(*pInputFileInfo,
-                                    setExplicitScans,
-                                    bUseExplicitScans,
-                                    vNovelMasses,
-                                    novelOpts.HasNovelMode(),
-                                    novelMassCtx,
-                                    sTempMgfPath,
-                                    iNumScansKept,
-                                    sErrorMsg))
+      double dElapsedSeconds = 0.0;
+      bool bSuccess = false;
+      string sErrorMsg;
+   };
+
+   int iPrefilterThreads = 1;
+   if (bSetThreadOverride && iThreadOverride > 0)
+   {
+      iPrefilterThreads = iThreadOverride;
+   }
+   else
+   {
+      int iNumThreadsParam = 0;
+      if (pSearchMgr->GetParamValue("num_threads", iNumThreadsParam) && iNumThreadsParam > 0)
+         iPrefilterThreads = iNumThreadsParam;
+   }
+
+   if (iPrefilterThreads < 1)
+      iPrefilterThreads = 1;
+   if (iPrefilterThreads > (int)vParsedInputs.size())
+      iPrefilterThreads = (int)vParsedInputs.size();
+   if (iPrefilterThreads < 1)
+      iPrefilterThreads = 1;
+
+   char szPrefilterStart[1024];
+   snprintf(szPrefilterStart,
+            sizeof(szPrefilterStart),
+            " [%s] scan prefilter (parallel): %zu input files, worker_threads=%d\n",
+            GetLocalTimestampString().c_str(),
+            vParsedInputs.size(),
+            iPrefilterThreads);
+   logout(szPrefilterStart);
+
+   auto tPrefilterStart = std::chrono::steady_clock::now();
+   vector<PrefilterResult> vPrefilterResults(vParsedInputs.size());
+   std::atomic<size_t> iNextInput(0);
+   std::atomic<bool> bPrefilterError(false);
+   std::mutex mError;
+   string sFirstPrefilterError;
+
+   vector<std::thread> vWorkers;
+   vWorkers.reserve((size_t)iPrefilterThreads);
+   for (int iWorker = 0; iWorker < iPrefilterThreads; ++iWorker)
+   {
+      vWorkers.emplace_back([&]()
+      {
+         while (true)
+         {
+            size_t iInput = iNextInput.fetch_add(1);
+            if (iInput >= vParsedInputs.size())
+               break;
+
+            if (bPrefilterError.load())
+               break;
+
+            InputFileInfo* pInputFileInfo = vParsedInputs.at(iInput);
+            PrefilterResult result;
+            result.sOriginalPath = pInputFileInfo->szFileName;
+            result.sOutputBaseName = pInputFileInfo->szBaseName;
+
+            auto tInputPrefilterStart = std::chrono::steady_clock::now();
+            string sTempMgfPath;
+            int iNumScansKept = 0;
+            string sLocalError;
+            bool bOk = FilterInputFileToTempMgf(*pInputFileInfo,
+                                                setExplicitScans,
+                                                bUseExplicitScans,
+                                                vNovelMasses,
+                                                bNovelMode,
+                                                novelMassCtx,
+                                                sTempMgfPath,
+                                                iNumScansKept,
+                                                sLocalError);
+            result.dElapsedSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - tInputPrefilterStart).count() / 1000.0;
+
+            if (!bOk)
+            {
+               result.bSuccess = false;
+               result.sErrorMsg = sLocalError;
+               bPrefilterError.store(true);
+               std::lock_guard<std::mutex> lk(mError);
+               if (sFirstPrefilterError.empty())
+                  sFirstPrefilterError = sLocalError;
+            }
+            else
+            {
+               result.sTempMgfPath = sTempMgfPath;
+               result.iNumScansKept = iNumScansKept;
+               result.bSuccess = true;
+            }
+
+            vPrefilterResults.at(iInput) = result;
+         }
+      });
+   }
+
+   for (size_t i = 0; i < vWorkers.size(); ++i)
+      vWorkers.at(i).join();
+
+   if (bPrefilterError.load())
+   {
+      if (sFirstPrefilterError.empty())
+      {
+         for (size_t i = 0; i < vPrefilterResults.size(); ++i)
+         {
+            if (!vPrefilterResults.at(i).bSuccess && !vPrefilterResults.at(i).sErrorMsg.empty())
+            {
+               sFirstPrefilterError = vPrefilterResults.at(i).sErrorMsg;
+               break;
+            }
+         }
+      }
+
+      if (sFirstPrefilterError.empty())
+         sFirstPrefilterError = " Error - scan prefilter failed.\n";
+      logerr(sFirstPrefilterError);
+      exit(1);
+   }
+
+   for (size_t i = 0; i < vPrefilterResults.size(); ++i)
+   {
+      vTempArtifacts.push_back(vPrefilterResults.at(i).sTempMgfPath);
+
+      char szLogBuf[1024];
+      snprintf(szLogBuf, sizeof(szLogBuf),
+               " [%s] scan prefilter: \"%s\" -> %d scans retained (%.3f sec)\n",
+               GetLocalTimestampString().c_str(),
+               vPrefilterResults.at(i).sOriginalPath.c_str(),
+               vPrefilterResults.at(i).iNumScansKept,
+               vPrefilterResults.at(i).dElapsedSeconds);
+      logout(szLogBuf);
+   }
+
+   LogStageTiming("scan prefilter (parallel)", tPrefilterStart, tProgramStart);
+
+   if (bUseNovelMergedSearch)
+   {
+      auto tMergeStart = std::chrono::steady_clock::now();
+
+      vector<std::pair<string, string>> vMergeInputs;
+      vMergeInputs.reserve(vPrefilterResults.size());
+      for (size_t i = 0; i < vPrefilterResults.size(); ++i)
+      {
+         string sInputStem = ComputeInputBaseName(vPrefilterResults.at(i).sOriginalPath);
+         string sSourceLabel;
+         if (!BuildNovelMergedSourceLabel(i + 1, sInputStem, sSourceLabel, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+
+         vMergeInputs.push_back(std::make_pair(vPrefilterResults.at(i).sTempMgfPath, sSourceLabel));
+      }
+
+      string sMergedMgfPath;
+      if (!MergeFilteredMgfFilesWithSourceTag(vMergeInputs, sMergedMgfPath, sErrorMsg))
       {
          logerr(sErrorMsg);
          exit(1);
       }
+      vTempArtifacts.push_back(sMergedMgfPath);
 
-      vTempArtifacts.push_back(sTempMgfPath);
+      InputFileInfo* pMergedInputFile = new InputFileInfo();
+      pMergedInputFile->iAnalysisType = AnalysisType_EntireFile;
+      pMergedInputFile->iFirstScan = 0;
+      pMergedInputFile->iLastScan = 0;
+      strncpy(pMergedInputFile->szFileName, sMergedMgfPath.c_str(), SIZE_FILE - 1);
+      pMergedInputFile->szFileName[SIZE_FILE - 1] = '\0';
+      strncpy(pMergedInputFile->szBaseName, sNovelMergedOutputBase.c_str(), SIZE_FILE - 1);
+      pMergedInputFile->szBaseName[SIZE_FILE - 1] = '\0';
 
-      strncpy(pInputFileInfo->szFileName, sTempMgfPath.c_str(), SIZE_FILE - 1);
-      pInputFileInfo->szFileName[SIZE_FILE - 1] = '\0';
-      strncpy(pInputFileInfo->szBaseName, sOutputBaseName.c_str(), SIZE_FILE - 1);
-      pInputFileInfo->szBaseName[SIZE_FILE - 1] = '\0';
+      pvInputFiles.push_back(pMergedInputFile);
 
-      char szLogBuf[512];
-      double dInputSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - tInputPrefilterStart).count() / 1000.0;
-      snprintf(szLogBuf, sizeof(szLogBuf),
-               " [%s] scan prefilter: \"%s\" -> %d scans retained (%.3f sec)\n",
+      for (size_t i = 0; i < vParsedInputs.size(); ++i)
+      {
+         delete vParsedInputs.at(i);
+         vParsedInputs.at(i) = NULL;
+      }
+      vParsedInputs.clear();
+
+      char szMergeLog[2048];
+      snprintf(szMergeLog,
+               sizeof(szMergeLog),
+               " [%s] filtered MGF merge: %zu files -> \"%s\"\n",
                GetLocalTimestampString().c_str(),
-               sOriginalPath.c_str(),
-               iNumScansKept,
-               dInputSeconds);
-      logout(szLogBuf);
+               vMergeInputs.size(),
+               sMergedMgfPath.c_str());
+      logout(szMergeLog);
 
-      pvInputFiles.push_back(pInputFileInfo);
+      LogStageTiming("filtered MGF merge", tMergeStart, tProgramStart);
+   }
+   else
+   {
+      for (size_t i = 0; i < vParsedInputs.size(); ++i)
+      {
+         InputFileInfo* pInputFileInfo = vParsedInputs.at(i);
+         strncpy(pInputFileInfo->szFileName, vPrefilterResults.at(i).sTempMgfPath.c_str(), SIZE_FILE - 1);
+         pInputFileInfo->szFileName[SIZE_FILE - 1] = '\0';
+         strncpy(pInputFileInfo->szBaseName, vPrefilterResults.at(i).sOutputBaseName.c_str(), SIZE_FILE - 1);
+         pInputFileInfo->szBaseName[SIZE_FILE - 1] = '\0';
+         pvInputFiles.push_back(pInputFileInfo);
+      }
    }
 
-   LogStageTiming("scan prefilter (total)", tPrefilterStart, tProgramStart);
-
    char szSummary[1024];
-   snprintf(szSummary,
-            sizeof(szSummary),
-            " [%s] search launch summary: %zu input files, novel_mode=%d, explicit_scan_filter=%d, novel_masses=%zu\n",
-            GetLocalTimestampString().c_str(),
-            pvInputFiles.size(),
-            novelOpts.HasNovelMode() ? 1 : 0,
-            novelOpts.HasExplicitScanFilter() ? 1 : 0,
-            vNovelMasses.size());
+   if (bUseNovelMergedSearch)
+   {
+      snprintf(szSummary,
+               sizeof(szSummary),
+               " [%s] search launch summary: %zu input file (merged novel), source_parts=%zu, novel_mode=%d, explicit_scan_filter=%d, novel_masses=%zu\n",
+               GetLocalTimestampString().c_str(),
+               pvInputFiles.size(),
+               vPrefilterResults.size(),
+               bNovelMode ? 1 : 0,
+               novelOpts.HasExplicitScanFilter() ? 1 : 0,
+               vNovelMasses.size());
+   }
+   else
+   {
+      snprintf(szSummary,
+               sizeof(szSummary),
+               " [%s] search launch summary: %zu input files, novel_mode=%d, explicit_scan_filter=%d, novel_masses=%zu\n",
+               GetLocalTimestampString().c_str(),
+               pvInputFiles.size(),
+               bNovelMode ? 1 : 0,
+               novelOpts.HasExplicitScanFilter() ? 1 : 0,
+               vNovelMasses.size());
+   }
    logout(szSummary);
 } // ProcessCmdLine
 

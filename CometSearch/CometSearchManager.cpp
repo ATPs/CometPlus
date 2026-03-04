@@ -876,6 +876,10 @@ bool CometSearchManager::InitializeStaticParams()
    if (g_vCometPlusDatabaseList.size() <= 1)
       g_bCometPlusMultiIdxMode = false;
 
+   int iCometPlusNovelOutputOnly = 0;
+   if (GetParamValue("cometplus_novel_output_only", iCometPlusNovelOutputOnly))
+      CometPlusSetNovelOutputOnly(iCometPlusNovelOutputOnly != 0);
+
    if (GetParamValue("decoy_prefix", strData))
    {
       strcpy(g_staticParams.szDecoyPrefix, strData.c_str());
