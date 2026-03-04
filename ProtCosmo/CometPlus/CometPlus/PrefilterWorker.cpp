@@ -64,6 +64,9 @@ static void PrintUsage(const char* pszCmd)
    fprintf(stdout, "  ctx_iMinPrecursorCharge, ctx_iMaxPrecursorCharge\n");
    fprintf(stdout, "  ctx_bCorrectMass, ctx_iMSLevel\n");
    fprintf(stdout, "\n");
+   fprintf(stdout, "Optional keys:\n");
+   fprintf(stdout, "  internal_novel_peptide_file (preferred novel-mass source when detailed TSV columns exist)\n");
+   fprintf(stdout, "\n");
    fprintf(stdout, "Boolean fields use 0/1.\n");
    fprintf(stdout, "When a filter is disabled, its companion list file key can be empty.\n");
    fprintf(stdout, "\n");
@@ -359,6 +362,11 @@ int main(int argc, char* argv[])
    if (!GetRequiredField(mJob, "novel_masses_file", sNovelMassesFile, sErrorMsg))
       return ExitWithResult(sResultPath, sErrorMsg, 1);
 
+   string sInternalNovelPeptideFile;
+   auto itInternalNovel = mJob.find("internal_novel_peptide_file");
+   if (itInternalNovel != mJob.end())
+      sInternalNovelPeptideFile = itInternalNovel->second;
+
    string sMassOffsetsFile;
    if (!GetRequiredField(mJob, "mass_offsets_file", sMassOffsetsFile, sErrorMsg))
       return ExitWithResult(sResultPath, sErrorMsg, 1);
@@ -431,11 +439,38 @@ int main(int argc, char* argv[])
    vector<double> vNovelMasses;
    if (bUseNovelMassFilter)
    {
-      if (sNovelMassesFile.empty())
-         return ExitWithResult(sResultPath, " Error - novel mass filter enabled but novel_masses_file is empty.\n", 1);
+      bool bLoadedFromInternalDetailed = false;
+      if (!sInternalNovelPeptideFile.empty())
+      {
+         vector<NovelPeptideRecord> vInternalRecords;
+         vector<double> vPrecomputedMasses;
+         bool bHasDetailedMzColumns = false;
+         if (!ParseInternalNovelPeptideFile(sInternalNovelPeptideFile,
+                                            vInternalRecords,
+                                            sErrorMsg,
+                                            &vPrecomputedMasses,
+                                            &bHasDetailedMzColumns))
+         {
+            return ExitWithResult(sResultPath, sErrorMsg, 1);
+         }
 
-      if (!ReadDoubleListFile(sNovelMassesFile, vNovelMasses, sErrorMsg))
-         return ExitWithResult(sResultPath, sErrorMsg, 1);
+         if (bHasDetailedMzColumns)
+         {
+            if (vPrecomputedMasses.empty())
+               return ExitWithResult(sResultPath, " Error - detailed internal novel peptide file did not contain any mz rows.\n", 1);
+            vNovelMasses.swap(vPrecomputedMasses);
+            bLoadedFromInternalDetailed = true;
+         }
+      }
+
+      if (!bLoadedFromInternalDetailed)
+      {
+         if (sNovelMassesFile.empty())
+            return ExitWithResult(sResultPath, " Error - novel mass filter enabled but novel_masses_file is empty.\n", 1);
+
+         if (!ReadDoubleListFile(sNovelMassesFile, vNovelMasses, sErrorMsg))
+            return ExitWithResult(sResultPath, sErrorMsg, 1);
+      }
    }
 
    InputFileInfo inputFile;

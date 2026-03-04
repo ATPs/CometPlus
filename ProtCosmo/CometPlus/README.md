@@ -225,13 +225,16 @@ These options are implemented as additive orchestration in CometPlus and preserv
   - In novel mode with multiple spectrum inputs, filtered MGF shards are merged and searched once; default merged output base is `<output-folder>/cometplus_novel_merged` unless `--name` is provided.
 
 - `--output_internal_novel_peptide <file>`
-  - Exports subtraction result as internal TSV (`peptide`, `peptide_id`, `protein_id`).
+  - Exports subtraction result as detailed internal TSV with columns:
+    `peptide`, `peptide_id`, `protein_id`, `peptide_with_mod`, `charge`, `mz`, `mz_window_min`, `mz_window_max`.
   - Requires at least one of `--novel_protein` / `--novel_peptide`.
   - If `<file>` contains no directory component, file is created under `--output-folder`.
   - If `<file>` includes a directory path, missing directories are created recursively.
 
 - `--internal_novel_peptide <file>`
   - Reuses an exported internal TSV and skips novel-vs-known subtraction.
+  - Accepts both legacy 3-column TSV (`peptide`, `peptide_id`, `protein_id`) and the new detailed TSV format.
+  - When detailed TSV is provided, precomputed masses are imported directly for prefilter fast-path.
   - Mutually exclusive with `--novel_protein` and `--novel_peptide`.
   - If `<file>` is relative, it is resolved from current working directory (not `--output-folder`).
 
@@ -262,7 +265,7 @@ When any novel option or explicit scan option is used, CometPlus runs this flow:
    Any collision causes early error and exit.
 4. Build novel candidates:
    - from `--novel_protein` digestion and/or `--novel_peptide` parsing, then merge and deduplicate by normalized peptide identity,
-   - or load from `--internal_novel_peptide` and skip subtraction.
+   - or load from `--internal_novel_peptide` and skip subtraction (detailed TSV can also provide precomputed masses).
 5. Parse known peptide universe for subtraction when using fresh novel inputs:
    - known `.idx`: read directly, no rebuild and no mutation.
    - known FASTA: temporary peptide index generation is used for extraction.
@@ -273,12 +276,17 @@ When any novel option or explicit scan option is used, CometPlus runs this flow:
 8. Assign/retain novel IDs:
    - fresh subtraction records are named `COMETPLUS_NOVEL_<n>`,
    - imported internal records preserve input `peptide_id`.
-9. Optionally write internal TSV (`--output_internal_novel_peptide`) with columns:
+9. Materialize retained novel peptides as temporary scoring DB input and compute retained novel masses.
+10. Optionally write detailed internal TSV (`--output_internal_novel_peptide`) with columns:
    - `peptide`: normalized peptide sequence,
    - `peptide_id`: `COMETPLUS_NOVEL_<n>` or imported ID,
-   - `protein_id`: semicolon-separated source list (protein IDs for protein source; peptide sequence for peptide source).
-10. If `--stop-after-saving-novel-peptide` is set, exit after step 9.
-11. Materialize retained novel peptides as temporary scoring DB input and append to known DB list.
+   - `protein_id`: semicolon-separated source list (protein IDs for protein source; peptide sequence for peptide source),
+   - `peptide_with_mod`: variable-mod mass-annotated peptide string,
+   - `charge`: charge state used for window expansion,
+   - `mz`: theoretical precursor m/z for (`peptide_with_mod`, `charge`),
+   - `mz_window_min` / `mz_window_max`: tolerance-only m/z window bounds.
+   Isotope-error and mass-offset expansion are still applied at runtime prefilter.
+11. If `--stop-after-saving-novel-peptide` is set, exit after step 10.
 12. Parse explicit scans from `--scan_numbers` and `--scan`, union and deduplicate.
 13. Intersect explicit scans with any scan-range constraint (`-F/-L` or `--first-scan/--last-scan`).
 14. Filter spectra into temporary MGF files (parallel workers based on `--thread` or `num_threads`):

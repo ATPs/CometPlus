@@ -62,6 +62,7 @@ struct PeptideMassEntry
    double dMass;
    bool bDecoy;
    vector<string> vProteinIds;
+   vector<unsigned char> vVarModSites;
 };
 
 struct NovelPeptideRecord
@@ -147,7 +148,9 @@ bool WriteNovelRecordsToFasta(const vector<NovelPeptideRecord>& vRecords,
                               string& sErrorMsg);
 bool ParseInternalNovelPeptideFile(const string& sPath,
                                    vector<NovelPeptideRecord>& vRecords,
-                                   string& sErrorMsg);
+                                   string& sErrorMsg,
+                                   vector<double>* pvPrecomputedMasses = NULL,
+                                   bool* pbHasDetailedMzColumns = NULL);
 bool BuildNovelMassFilterContext(CometInterfaces::ICometSearchManager* pSearchMgr,
                                  NovelMassFilterContext& ctx,
                                  string& sErrorMsg);

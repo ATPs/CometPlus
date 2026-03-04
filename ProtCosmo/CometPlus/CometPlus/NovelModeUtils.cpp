@@ -591,11 +591,40 @@ static void SplitTabLine(const string& sLine, vector<string>& vFields)
    }
 }
 
+static bool ParseIntStrictLocal(const string& sValue, int& iOut)
+{
+   char* pEnd = NULL;
+   long lValue = strtol(sValue.c_str(), &pEnd, 10);
+   if (pEnd == NULL || *pEnd != '\0')
+      return false;
+   if (lValue < INT_MIN || lValue > INT_MAX)
+      return false;
+   iOut = (int)lValue;
+   return true;
+}
+
+static bool ParseDoubleStrictLocal(const string& sValue, double& dOut)
+{
+   char* pEnd = NULL;
+   errno = 0;
+   double dValue = strtod(sValue.c_str(), &pEnd);
+   if (pEnd == NULL || *pEnd != '\0' || errno == ERANGE)
+      return false;
+   dOut = dValue;
+   return true;
+}
+
 bool ParseInternalNovelPeptideFile(const string& sPath,
                                    vector<NovelPeptideRecord>& vRecords,
-                                   string& sErrorMsg)
+                                   string& sErrorMsg,
+                                   vector<double>* pvPrecomputedMasses,
+                                   bool* pbHasDetailedMzColumns)
 {
    vRecords.clear();
+   if (pvPrecomputedMasses != NULL)
+      pvPrecomputedMasses->clear();
+   if (pbHasDetailedMzColumns != NULL)
+      *pbHasDetailedMzColumns = false;
 
    std::ifstream inFile(sPath.c_str(), std::ios::in | std::ios::binary);
    if (!inFile.good())
@@ -617,6 +646,11 @@ bool ParseInternalNovelPeptideFile(const string& sPath,
    int iPepCol = -1;
    int iPepIdCol = -1;
    int iProtIdCol = -1;
+   int iPepWithModCol = -1;
+   int iChargeCol = -1;
+   int iMzCol = -1;
+   int iMzMinCol = -1;
+   int iMzMaxCol = -1;
    for (size_t i = 0; i < vHeaderFields.size(); ++i)
    {
       string sCol = TrimStringLocal(vHeaderFields[i]);
@@ -626,6 +660,16 @@ bool ParseInternalNovelPeptideFile(const string& sPath,
          iPepIdCol = (int)i;
       else if (sCol == "protein_id")
          iProtIdCol = (int)i;
+      else if (sCol == "peptide_with_mod")
+         iPepWithModCol = (int)i;
+      else if (sCol == "charge")
+         iChargeCol = (int)i;
+      else if (sCol == "mz")
+         iMzCol = (int)i;
+      else if (sCol == "mz_window_min")
+         iMzMinCol = (int)i;
+      else if (sCol == "mz_window_max")
+         iMzMaxCol = (int)i;
    }
 
    if (iPepCol < 0 || iPepIdCol < 0 || iProtIdCol < 0)
@@ -634,7 +678,26 @@ bool ParseInternalNovelPeptideFile(const string& sPath,
       return false;
    }
 
+   bool bAnyDetailedCols = (iPepWithModCol >= 0
+         || iChargeCol >= 0
+         || iMzCol >= 0
+         || iMzMinCol >= 0
+         || iMzMaxCol >= 0);
+   bool bHasDetailedCols = (iPepWithModCol >= 0
+         && iChargeCol >= 0
+         && iMzCol >= 0
+         && iMzMinCol >= 0
+         && iMzMaxCol >= 0);
+   if (bAnyDetailedCols && !bHasDetailedCols)
+   {
+      sErrorMsg = " Error - internal novel peptide file detailed format requires columns: peptide_with_mod, charge, mz, mz_window_min, mz_window_max.\n";
+      return false;
+   }
+   if (pbHasDetailedMzColumns != NULL)
+      *pbHasDetailedMzColumns = bHasDetailedCols;
+
    unordered_map<string, size_t> mPepToIndex;
+   set<double> setPrecomputedMasses;
    string sLine;
    int iLineNumber = 1;
    while (std::getline(inFile, sLine))
@@ -699,6 +762,48 @@ bool ParseInternalNovelPeptideFile(const string& sPath,
                rec.vProteinIds.push_back(vProteinIds[i]);
          }
       }
+
+      if (bHasDetailedCols)
+      {
+         iNeeded = std::max(iNeeded, std::max(iPepWithModCol, std::max(iChargeCol, std::max(iMzCol, std::max(iMzMinCol, iMzMaxCol)))));
+         if ((int)vFields.size() <= iNeeded)
+         {
+            sErrorMsg = " Error - malformed internal novel peptide line " + std::to_string(iLineNumber) + ".\n";
+            return false;
+         }
+
+         int iCharge = 0;
+         double dMz = 0.0;
+         double dMzMin = 0.0;
+         double dMzMax = 0.0;
+
+         string sCharge = TrimStringLocal(vFields[iChargeCol]);
+         string sMz = TrimStringLocal(vFields[iMzCol]);
+         string sMzMin = TrimStringLocal(vFields[iMzMinCol]);
+         string sMzMax = TrimStringLocal(vFields[iMzMaxCol]);
+         if (!ParseIntStrictLocal(sCharge, iCharge)
+               || !ParseDoubleStrictLocal(sMz, dMz)
+               || !ParseDoubleStrictLocal(sMzMin, dMzMin)
+               || !ParseDoubleStrictLocal(sMzMax, dMzMax))
+         {
+            sErrorMsg = " Error - invalid numeric value at internal novel peptide line " + std::to_string(iLineNumber) + ".\n";
+            return false;
+         }
+
+         if (iCharge <= 0)
+         {
+            sErrorMsg = " Error - invalid charge at internal novel peptide line " + std::to_string(iLineNumber) + ".\n";
+            return false;
+         }
+
+         double dMass = dMz * iCharge - PROTON_MASS * (iCharge - 1);
+         if (dMass <= 0.0)
+         {
+            sErrorMsg = " Error - invalid mz/charge combination at internal novel peptide line " + std::to_string(iLineNumber) + ".\n";
+            return false;
+         }
+         setPrecomputedMasses.insert(dMass);
+      }
    }
 
    if (vRecords.empty())
@@ -706,6 +811,15 @@ bool ParseInternalNovelPeptideFile(const string& sPath,
       sErrorMsg = " Error - no peptide entries were parsed from internal novel peptide input.\n";
       return false;
    }
+
+   if (bHasDetailedCols && setPrecomputedMasses.empty())
+   {
+      sErrorMsg = " Error - no mz entries were parsed from detailed internal novel peptide input.\n";
+      return false;
+   }
+
+   if (pvPrecomputedMasses != NULL)
+      pvPrecomputedMasses->assign(setPrecomputedMasses.begin(), setPrecomputedMasses.end());
 
    return true;
 }
@@ -905,4 +1019,3 @@ bool RunCometForIndexGeneration(const string& sExecutablePath,
 
    return true;
 }
-

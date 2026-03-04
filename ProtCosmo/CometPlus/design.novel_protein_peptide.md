@@ -28,7 +28,7 @@ Goal:
 | `--scan` | text file of scan integers | delimiters: comma or any whitespace | No |
 | `--scan_numbers` | inline scan list | same integer parser as `--scan` | No |
 | `--output-folder` | directory path | output root; created recursively if missing | Yes |
-| `--output_internal_novel_peptide` | output file path | write internal TSV; no-dir path resolves to output-folder | No |
+| `--output_internal_novel_peptide` | output file path | write detailed internal TSV; no-dir path resolves to output-folder | No |
 | `--internal_novel_peptide` | TSV file path | load internal TSV and skip subtraction | Yes |
 | `--stop-after-saving-novel-peptide` | flag | requires `--output_internal_novel_peptide` | No |
 | `--keep-tmp` | flag | keep temporary artifacts on exit for debugging | Yes |
@@ -409,7 +409,7 @@ This file stores retained novel peptides after known-db subtraction.
 Format is fixed TSV with header:
 
 ```text
-peptide	peptide_id	protein_id
+peptide	peptide_id	protein_id	peptide_with_mod	charge	mz	mz_window_min	mz_window_max
 ```
 
 Column semantics:
@@ -420,6 +420,16 @@ Column semantics:
    - novel_protein source: source protein IDs, semicolon-separated.
    - novel_peptide source: normalized peptide sequence itself.
    - mixed source: merged semicolon list.
+4. `peptide_with_mod`: variable-mod mass-annotation string for the indexed peptide form (e.g. `n[+42.0106]PEPTM[+15.9949]IDE`).
+5. `charge`: charge-state expansion row key (`min_precursor_charge..max_precursor_charge`).
+6. `mz`: theoretical precursor m/z for (`peptide_with_mod`, `charge`).
+7. `mz_window_min`: lower m/z bound for tolerance-only window.
+8. `mz_window_max`: upper m/z bound for tolerance-only window.
+
+Window policy:
+
+1. Exported windows are tolerance-only (no isotope/mass-offset row expansion in TSV).
+2. Runtime prefilter still applies `isotope_error` and `mass_offsets` exactly as before.
 
 Path behavior:
 
@@ -435,12 +445,18 @@ Path behavior:
 4. Can be used without spectrum inputs.
 
 ### 12.3 Reuse: `--internal_novel_peptide`
-1. Input must be the TSV format produced above.
-2. Required columns: `peptide`, `peptide_id`, `protein_id`.
-3. Imported records preserve `peptide_id` values from file (no renumbering).
-4. This mode is mutually exclusive with `--novel_protein` / `--novel_peptide`.
-5. Known-vs-novel subtraction is skipped.
-6. Workflow continues from novel mass collection + prefilter + search.
+1. Input may be either:
+   - legacy TSV (`peptide`, `peptide_id`, `protein_id`), or
+   - detailed TSV format produced above.
+2. Imported records preserve `peptide_id` values from file (no renumbering).
+3. This mode is mutually exclusive with `--novel_protein` / `--novel_peptide`.
+4. Known-vs-novel subtraction is skipped.
+5. Detailed TSV fast-path:
+   - precomputed masses are imported directly from (`charge`, `mz`) rows,
+   - temporary no-cut mass-index generation stage is skipped.
+6. Legacy TSV fallback:
+   - workflow computes novel masses via temporary no-cut index generation (previous behavior).
+7. Workflow then continues to prefilter + search.
 
 ## 13. Novel-Only Spectrum Output Filtering
 

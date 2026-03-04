@@ -231,6 +231,8 @@ bool ParsePeptideIdxEntries(const string& sIdxPath,
          return false;
       }
 
+      vector<unsigned char> vVarModSites;
+      vVarModSites.resize((size_t)iLen + 2, 0);
       for (unsigned char iMod = 0; iMod < cNumMods; ++iMod)
       {
          unsigned char cPos = 0;
@@ -242,8 +244,14 @@ bool ParsePeptideIdxEntries(const string& sIdxPath,
             sErrorMsg = " Error - truncated peptide mod sites while parsing \"" + sIdxPath + "\".\n";
             return false;
          }
-         (void)cPos;
-         (void)cWhichMod;
+
+         if ((size_t)cPos >= vVarModSites.size())
+         {
+            fclose(fp);
+            sErrorMsg = " Error - invalid peptide mod position while parsing \"" + sIdxPath + "\".\n";
+            return false;
+         }
+         vVarModSites[(size_t)cPos] = (unsigned char)cWhichMod;
       }
 
       double dPepMass = 0.0;
@@ -260,6 +268,7 @@ bool ParsePeptideIdxEntries(const string& sIdxPath,
       entry.sPeptide = sPeptide;
       entry.dMass = dPepMass;
       entry.bDecoy = false;
+      entry.vVarModSites = vVarModSites;
       if (bLoadProteinIds)
       {
          if (lProteinSetPos < 0 || (size_t)lProteinSetPos >= vProteinSets.size())
@@ -371,6 +380,7 @@ bool ParseFragmentIdxEntries(const string& sIdxPath,
       entry.sPeptide = sPeptide;
       entry.dMass = dPepMass;
       entry.bDecoy = false;
+      entry.vVarModSites.clear();
       vEntries.push_back(entry);
    }
 

@@ -17,16 +17,165 @@
 #include "CometPlusRuntimeUtils.h"
 #include "CometPlusMultiDB.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <map>
 #include <set>
+#include <sstream>
 #include <unordered_map>
 
 using namespace std;
 
+static string JoinProteinIdsField(const vector<string>& vProteinIds)
+{
+   string sField;
+   for (size_t i = 0; i < vProteinIds.size(); ++i)
+   {
+      if (i > 0)
+         sField += ";";
+      sField += vProteinIds.at(i);
+   }
+   return sField;
+}
+
+static bool ParseVariableModMasses(CometInterfaces::ICometSearchManager* pSearchMgr,
+                                   vector<double>& vMasses,
+                                   vector<bool>& vMassKnown)
+{
+   vMasses.assign(16, 0.0);
+   vMassKnown.assign(16, false);
+   if (pSearchMgr == NULL)
+      return false;
+
+   for (int iMod = 1; iMod <= 15; ++iMod)
+   {
+      char szParamName[32];
+      snprintf(szParamName, sizeof(szParamName), "variable_mod%02d", iMod);
+
+      VarMods vm;
+      if (!pSearchMgr->GetParamValue(szParamName, vm))
+         continue;
+
+      vMasses.at((size_t)iMod) = vm.dVarModMass;
+      vMassKnown.at((size_t)iMod) = true;
+   }
+
+   return true;
+}
+
+static string BuildVarModToken(int iModIndex,
+                               const vector<double>& vModMasses,
+                               const vector<bool>& vModMassKnown)
+{
+   if (iModIndex <= 0)
+      return "";
+
+   if ((size_t)iModIndex < vModMassKnown.size()
+         && vModMassKnown.at((size_t)iModIndex))
+   {
+      char szBuf[64];
+      snprintf(szBuf, sizeof(szBuf), "[%+.4f]", vModMasses.at((size_t)iModIndex));
+      return szBuf;
+   }
+
+   return "[mod" + std::to_string(iModIndex) + "]";
+}
+
+static string BuildPeptideWithModMassAnnotation(const PeptideMassEntry& entry,
+                                                const vector<double>& vModMasses,
+                                                const vector<bool>& vModMassKnown)
+{
+   string sPeptide = NormalizePeptideToken(entry.sPeptide);
+   if (sPeptide.empty())
+      return "";
+
+   size_t iLen = sPeptide.length();
+   if (entry.vVarModSites.size() < iLen + 2)
+      return sPeptide;
+
+   bool bAnyMods = false;
+   for (size_t i = 0; i < iLen + 2; ++i)
+   {
+      if (entry.vVarModSites.at(i) != 0)
+      {
+         bAnyMods = true;
+         break;
+      }
+   }
+   if (!bAnyMods)
+      return sPeptide;
+
+   string sOut;
+   int iNtermMod = (int)entry.vVarModSites.at(iLen);
+   if (iNtermMod > 0)
+   {
+      sOut += "n";
+      sOut += BuildVarModToken(iNtermMod, vModMasses, vModMassKnown);
+   }
+
+   for (size_t i = 0; i < iLen; ++i)
+   {
+      sOut.push_back(sPeptide[i]);
+      int iMod = (int)entry.vVarModSites.at(i);
+      if (iMod > 0)
+         sOut += BuildVarModToken(iMod, vModMasses, vModMassKnown);
+   }
+
+   int iCtermMod = (int)entry.vVarModSites.at(iLen + 1);
+   if (iCtermMod > 0)
+   {
+      sOut += "c";
+      sOut += BuildVarModToken(iCtermMod, vModMasses, vModMassKnown);
+   }
+
+   return sOut;
+}
+
+static void ComputeToleranceOnlyMzWindow(double dPepMass,
+                                         int iCharge,
+                                         const NovelMassFilterContext& ctx,
+                                         double& dMz,
+                                         double& dMzMin,
+                                         double& dMzMax)
+{
+   dMz = (dPepMass + (iCharge - 1) * PROTON_MASS) / iCharge;
+
+   if (ctx.iTolUnits == 2) // ppm
+   {
+      dMzMin = dMz + dMz * ctx.dTolLower / 1.0E6;
+      dMzMax = dMz + dMz * ctx.dTolUpper / 1.0E6;
+   }
+   else
+   {
+      double dTolLow = ctx.dTolLower;
+      double dTolHigh = ctx.dTolUpper;
+
+      if (ctx.iTolUnits == 1) // mmu -> amu
+      {
+         dTolLow *= 0.001;
+         dTolHigh *= 0.001;
+      }
+
+      if (ctx.iTolType == 1)
+      {
+         dTolLow *= iCharge;
+         dTolHigh *= iCharge;
+      }
+
+      double dExpMassMin = dPepMass - dTolHigh;
+      double dExpMassMax = dPepMass - dTolLow;
+      dMzMin = (dExpMassMin + (iCharge - 1) * PROTON_MASS) / iCharge;
+      dMzMax = (dExpMassMax + (iCharge - 1) * PROTON_MASS) / iCharge;
+   }
+
+   if (dMzMin > dMzMax)
+      std::swap(dMzMin, dMzMax);
+}
+
 void RunNovelWorkflowIfNeeded(const NovelModeOptions& novelOpts,
+                              CometInterfaces::ICometSearchManager* pSearchMgr,
                               const std::vector<string>& vKnownDatabases,
                               bool bKnownAllIdx,
                               int iKnownIdxType,
@@ -319,11 +468,17 @@ void RunNovelWorkflowIfNeeded(const NovelModeOptions& novelOpts,
          LogStageTiming("novel candidate subtraction", tStageStart, tProgramStart);
       }
    }
-   else if (novelOpts.HasInternalNovelInput())
+   vector<double> vImportedPrecomputedMasses;
+   bool bImportedHasDetailedMzColumns = false;
+   if (novelOpts.HasInternalNovelInput())
    {
       auto tStageStart = std::chrono::steady_clock::now();
       string sErrorMsg;
-      if (!ParseInternalNovelPeptideFile(novelOpts.sInternalNovelPeptidePath, vNovelRecords, sErrorMsg))
+      if (!ParseInternalNovelPeptideFile(novelOpts.sInternalNovelPeptidePath,
+                                         vNovelRecords,
+                                         sErrorMsg,
+                                         &vImportedPrecomputedMasses,
+                                         &bImportedHasDetailedMzColumns))
       {
          logerr(sErrorMsg);
          exit(1);
@@ -335,13 +490,164 @@ void RunNovelWorkflowIfNeeded(const NovelModeOptions& novelOpts,
                vNovelRecords.size(),
                novelOpts.sInternalNovelPeptidePath.c_str());
       logout(szLogBuf);
+
+      if (bImportedHasDetailedMzColumns && !vImportedPrecomputedMasses.empty())
+      {
+         char szMassBuf[512];
+         snprintf(szMassBuf,
+                  sizeof(szMassBuf),
+                  " Novel mode: detailed internal TSV detected; imported %zu precomputed novel masses.\n",
+                  vImportedPrecomputedMasses.size());
+         logout(szMassBuf);
+      }
+
       LogStageTiming("internal novel peptide import", tStageStart, tProgramStart);
+   }
+
+   if (iDecoySearch == 0)
+   {
+      logout(" Warning - decoy_search=0 in novel mode; novel peptide inputs are treated as target entries unless already encoded as decoy sequences.\n");
+   }
+
+   vector<PeptideMassEntry> vNovelMassEntriesForExport;
+   if (!vNovelRecords.empty())
+   {
+      auto tStageStart = std::chrono::steady_clock::now();
+      bool bDisableNtermMethionineClipForNovel = (!novelOpts.sNovelPeptidePath.empty()
+            || novelOpts.HasInternalNovelInput());
+      string sNovelFastaPath;
+      string sErrorMsg;
+      if (!WriteNovelRecordsToFasta(vNovelRecords, "cometplus_novel_scoring", sNovelFastaPath, sErrorMsg))
+      {
+         logerr(sErrorMsg);
+         exit(1);
+      }
+      vTempArtifacts.push_back(sNovelFastaPath);
+
+      bool bUseImportedDetailedMasses = false;
+      if (novelOpts.HasInternalNovelInput()
+            && bImportedHasDetailedMzColumns
+            && !vImportedPrecomputedMasses.empty())
+      {
+         vNovelMasses = vImportedPrecomputedMasses;
+         bUseImportedDetailedMasses = true;
+
+         char szMassLog[512];
+         snprintf(szMassLog,
+                  sizeof(szMassLog),
+                  " Novel mode: using %zu precomputed novel masses from detailed internal TSV (skip temporary mass-index generation).\n",
+                  vNovelMasses.size());
+         logout(szMassLog);
+      }
+
+      if (!bUseImportedDetailedMasses)
+      {
+         int iNoCutEnzyme = -1;
+         if (!FindNoCutEnzymeNumber(sParamsFile, iNoCutEnzyme, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+
+         map<string, string> mNoCutOverrides;
+         mNoCutOverrides["search_enzyme_number"] = std::to_string(iNoCutEnzyme);
+         mNoCutOverrides["search_enzyme2_number"] = "0";
+         mNoCutOverrides["allowed_missed_cleavage"] = "0";
+         mNoCutOverrides["num_enzyme_termini"] = "2";
+         if (bDisableNtermMethionineClipForNovel)
+            mNoCutOverrides["clip_nterm_methionine"] = "0";
+
+         string sTmpNoCutParams;
+         if (!BuildTemporaryParamsFile(sParamsFile, mNoCutOverrides, sTmpNoCutParams, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+         vTempArtifacts.push_back(sTmpNoCutParams);
+
+         if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath,
+                                         sTmpNoCutParams,
+                                         sNovelFastaPath,
+                                         false,
+                                         iThreadOverride,
+                                         sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+
+         string sTmpNovelMassIdx = sNovelFastaPath + ".idx";
+         vTempArtifacts.push_back(sTmpNovelMassIdx);
+
+         if (!ParsePeptideIdxEntries(sTmpNovelMassIdx, vNovelMassEntriesForExport, false, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+
+         set<double> setNovelMasses;
+         for (size_t i = 0; i < vNovelMassEntriesForExport.size(); ++i)
+         {
+            if (vNovelMassEntriesForExport.at(i).dMass > 0.0)
+               setNovelMasses.insert(vNovelMassEntriesForExport.at(i).dMass);
+         }
+         vNovelMasses.assign(setNovelMasses.begin(), setNovelMasses.end());
+      }
+
+      if (!(novelOpts.bStopAfterSavingNovelPeptide && !sResolvedOutputInternalNovelPath.empty()))
+      {
+         if (bKnownAllIdx)
+         {
+            bool bFragment = (iKnownIdxType == 1);
+            string sScoringParamsPath = sParamsFile;
+            if (bDisableNtermMethionineClipForNovel)
+            {
+               map<string, string> mScoringOverrides;
+               mScoringOverrides["clip_nterm_methionine"] = "0";
+               if (!BuildTemporaryParamsFile(sParamsFile, mScoringOverrides, sScoringParamsPath, sErrorMsg))
+               {
+                  logerr(sErrorMsg);
+                  exit(1);
+               }
+               vTempArtifacts.push_back(sScoringParamsPath);
+            }
+
+            if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath,
+                                            sScoringParamsPath,
+                                            sNovelFastaPath,
+                                            bFragment,
+                                            iThreadOverride,
+                                            sErrorMsg))
+            {
+               logerr(sErrorMsg);
+               exit(1);
+            }
+
+            sNovelScoringDatabase = sNovelFastaPath + ".idx";
+            vTempArtifacts.push_back(sNovelScoringDatabase);
+         }
+         else
+         {
+            sNovelScoringDatabase = sNovelFastaPath;
+         }
+      }
+
+      LogStageTiming("novel mass calculation", tStageStart, tProgramStart);
+   }
+   else
+   {
+      logout(" Warning - no novel peptides remain after subtraction against known database(s); spectrum filtering will likely remove all scans.\n");
    }
 
    if (!sResolvedOutputInternalNovelPath.empty())
    {
-      auto tStageStart = std::chrono::steady_clock::now();
+      if (pSearchMgr == NULL)
+      {
+         logerr(" Error - internal novel peptide export requires initialized search manager.\n");
+         exit(1);
+      }
 
+      auto tStageStart = std::chrono::steady_clock::now();
       string sOutputDir = GetDirNameLocal(sResolvedOutputInternalNovelPath);
       if (!sOutputDir.empty())
       {
@@ -362,30 +668,147 @@ void RunNovelWorkflowIfNeeded(const NovelModeOptions& novelOpts,
          exit(1);
       }
 
-      outFile << "peptide\tpeptide_id\tprotein_id\n";
-      int iAutoId = 1;
+      NovelMassFilterContext exportCtx = {};
+      string sErrorMsg;
+      if (!BuildNovelMassFilterContext(pSearchMgr, exportCtx, sErrorMsg))
+      {
+         logerr(sErrorMsg);
+         exit(1);
+      }
+
+      int iMinCharge = exportCtx.iMinPrecursorCharge;
+      int iMaxCharge = exportCtx.iMaxPrecursorCharge;
+      if (iMinCharge < 1)
+         iMinCharge = 1;
+      if (iMaxCharge < iMinCharge)
+         iMaxCharge = iMinCharge;
+
+      vector<double> vVarModMasses;
+      vector<bool> vVarModMassKnown;
+      if (!ParseVariableModMasses(pSearchMgr, vVarModMasses, vVarModMassKnown))
+      {
+         logerr(" Error - failed to parse variable mod masses for internal novel peptide export.\n");
+         exit(1);
+      }
+
+      unordered_map<string, size_t> mPeptideToRecord;
+      unordered_map<string, size_t> mMethionineClippedToRecord;
+      set<string> setAmbiguousMethionineClipped;
       for (size_t i = 0; i < vNovelRecords.size(); ++i)
       {
          string sPeptide = NormalizePeptideToken(vNovelRecords.at(i).sPeptide);
+         if (!sPeptide.empty())
+         {
+            mPeptideToRecord[sPeptide] = i;
+
+            if (sPeptide.length() > 1 && sPeptide[0] == 'M')
+            {
+               string sClipped = sPeptide.substr(1);
+               auto itClipped = mMethionineClippedToRecord.find(sClipped);
+               if (itClipped == mMethionineClippedToRecord.end())
+               {
+                  if (setAmbiguousMethionineClipped.find(sClipped) == setAmbiguousMethionineClipped.end())
+                     mMethionineClippedToRecord[sClipped] = i;
+               }
+               else if (itClipped->second != i)
+               {
+                  mMethionineClippedToRecord.erase(itClipped);
+                  setAmbiguousMethionineClipped.insert(sClipped);
+               }
+            }
+         }
+      }
+
+      outFile << "peptide\tpeptide_id\tprotein_id\tpeptide_with_mod\tcharge\tmz\tmz_window_min\tmz_window_max\n";
+
+      size_t tRowCount = 0;
+      size_t tMappedByMethionineClip = 0;
+      size_t tUnmappedEntries = 0;
+      unordered_map<string, string> mSyntheticPeptideIds;
+      size_t tNextSyntheticId = 1;
+      for (size_t i = 0; i < vNovelMassEntriesForExport.size(); ++i)
+      {
+         const PeptideMassEntry& entry = vNovelMassEntriesForExport.at(i);
+         if (entry.dMass <= 0.0)
+            continue;
+
+         string sPeptide = NormalizePeptideToken(entry.sPeptide);
          if (sPeptide.empty())
             continue;
 
-         string sPeptideId = vNovelRecords.at(i).sPeptideId;
-         if (sPeptideId.empty())
+         const NovelPeptideRecord* pRecord = NULL;
+         auto itRecord = mPeptideToRecord.find(sPeptide);
+         if (itRecord != mPeptideToRecord.end())
          {
-            sPeptideId = "COMETPLUS_NOVEL_" + std::to_string(iAutoId);
-            iAutoId++;
+            pRecord = &vNovelRecords.at(itRecord->second);
+         }
+         else
+         {
+            auto itClipped = mMethionineClippedToRecord.find(sPeptide);
+            if (itClipped != mMethionineClippedToRecord.end()
+                  && setAmbiguousMethionineClipped.find(sPeptide) == setAmbiguousMethionineClipped.end())
+            {
+               pRecord = &vNovelRecords.at(itClipped->second);
+               ++tMappedByMethionineClip;
+            }
          }
 
+         string sPeptideWithMod = BuildPeptideWithModMassAnnotation(entry, vVarModMasses, vVarModMassKnown);
+         if (sPeptideWithMod.empty())
+            sPeptideWithMod = sPeptide;
+
+         string sPeptideIdField;
          string sProteinIdField;
-         for (size_t j = 0; j < vNovelRecords.at(i).vProteinIds.size(); ++j)
+         if (pRecord != NULL)
          {
-            if (j > 0)
-               sProteinIdField += ";";
-            sProteinIdField += vNovelRecords.at(i).vProteinIds.at(j);
+            sPeptideIdField = pRecord->sPeptideId;
+            sProteinIdField = JoinProteinIdsField(pRecord->vProteinIds);
+         }
+         else
+         {
+            ++tUnmappedEntries;
+
+            auto itSynthetic = mSyntheticPeptideIds.find(sPeptide);
+            if (itSynthetic == mSyntheticPeptideIds.end())
+            {
+               string sSyntheticId = "COMETPLUS_NOVEL_UNMAPPED_" + std::to_string(tNextSyntheticId);
+               tNextSyntheticId++;
+               mSyntheticPeptideIds[sPeptide] = sSyntheticId;
+               sPeptideIdField = sSyntheticId;
+            }
+            else
+            {
+               sPeptideIdField = itSynthetic->second;
+            }
+
+            sProteinIdField = sPeptide;
          }
 
-         outFile << sPeptide << "\t" << sPeptideId << "\t" << sProteinIdField << "\n";
+         for (int z = iMinCharge; z <= iMaxCharge; ++z)
+         {
+            double dMz = 0.0;
+            double dMzMin = 0.0;
+            double dMzMax = 0.0;
+            ComputeToleranceOnlyMzWindow(entry.dMass, z, exportCtx, dMz, dMzMin, dMzMax);
+
+            char szMz[64];
+            char szMzMin[64];
+            char szMzMax[64];
+            snprintf(szMz, sizeof(szMz), "%.17g", dMz);
+            snprintf(szMzMin, sizeof(szMzMin), "%.17g", dMzMin);
+            snprintf(szMzMax, sizeof(szMzMax), "%.17g", dMzMax);
+
+            outFile << sPeptide
+                    << "\t" << sPeptideIdField
+                    << "\t" << sProteinIdField
+                    << "\t" << sPeptideWithMod
+                    << "\t" << z
+                    << "\t" << szMz
+                    << "\t" << szMzMin
+                    << "\t" << szMzMax
+                    << "\n";
+            ++tRowCount;
+         }
       }
 
       outFile.flush();
@@ -401,8 +824,28 @@ void RunNovelWorkflowIfNeeded(const NovelModeOptions& novelOpts,
                sizeof(szLogBuf),
                " Saved internal novel peptide file: %s (%zu rows)\n",
                sResolvedOutputInternalNovelPath.c_str(),
-               vNovelRecords.size());
+               tRowCount);
       logout(szLogBuf);
+
+      if (tMappedByMethionineClip > 0)
+      {
+         char szMapBuf[512];
+         snprintf(szMapBuf,
+                  sizeof(szMapBuf),
+                  " Note - internal novel peptide export mapped %zu mass entries via N-term methionine clipping.\n",
+                  tMappedByMethionineClip);
+         logout(szMapBuf);
+      }
+
+      if (tUnmappedEntries > 0)
+      {
+         char szWarnBuf[512];
+         snprintf(szWarnBuf,
+                  sizeof(szWarnBuf),
+                  " Warning - internal novel peptide export could not map %zu mass entries to source peptides; synthetic peptide_id/protein_id were used.\n",
+                  tUnmappedEntries);
+         logout(szWarnBuf);
+      }
       LogStageTiming("internal novel peptide export", tStageStart, tProgramStart);
 
       if (novelOpts.bStopAfterSavingNovelPeptide)
@@ -430,101 +873,5 @@ void RunNovelWorkflowIfNeeded(const NovelModeOptions& novelOpts,
          }
          exit(0);
       }
-   }
-
-   if (iDecoySearch == 0)
-   {
-      logout(" Warning - decoy_search=0 in novel mode; novel peptide inputs are treated as target entries unless already encoded as decoy sequences.\n");
-   }
-
-   if (!vNovelRecords.empty())
-   {
-      auto tStageStart = std::chrono::steady_clock::now();
-      string sNovelFastaPath;
-      string sErrorMsg;
-      if (!WriteNovelRecordsToFasta(vNovelRecords, "cometplus_novel_scoring", sNovelFastaPath, sErrorMsg))
-      {
-         logerr(sErrorMsg);
-         exit(1);
-      }
-      vTempArtifacts.push_back(sNovelFastaPath);
-
-      int iNoCutEnzyme = -1;
-      if (!FindNoCutEnzymeNumber(sParamsFile, iNoCutEnzyme, sErrorMsg))
-      {
-         logerr(sErrorMsg);
-         exit(1);
-      }
-
-      map<string, string> mNoCutOverrides;
-      mNoCutOverrides["search_enzyme_number"] = std::to_string(iNoCutEnzyme);
-      mNoCutOverrides["search_enzyme2_number"] = "0";
-      mNoCutOverrides["allowed_missed_cleavage"] = "0";
-      mNoCutOverrides["num_enzyme_termini"] = "2";
-
-      string sTmpNoCutParams;
-      if (!BuildTemporaryParamsFile(sParamsFile, mNoCutOverrides, sTmpNoCutParams, sErrorMsg))
-      {
-         logerr(sErrorMsg);
-         exit(1);
-      }
-      vTempArtifacts.push_back(sTmpNoCutParams);
-
-      if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath,
-                                      sTmpNoCutParams,
-                                      sNovelFastaPath,
-                                      false,
-                                      iThreadOverride,
-                                      sErrorMsg))
-      {
-         logerr(sErrorMsg);
-         exit(1);
-      }
-
-      string sTmpNovelMassIdx = sNovelFastaPath + ".idx";
-      vTempArtifacts.push_back(sTmpNovelMassIdx);
-
-      vector<PeptideMassEntry> vNovelMassEntries;
-      if (!ParsePeptideIdxEntries(sTmpNovelMassIdx, vNovelMassEntries, false, sErrorMsg))
-      {
-         logerr(sErrorMsg);
-         exit(1);
-      }
-
-      set<double> setNovelMasses;
-      for (size_t i = 0; i < vNovelMassEntries.size(); ++i)
-      {
-         if (vNovelMassEntries.at(i).dMass > 0.0)
-            setNovelMasses.insert(vNovelMassEntries.at(i).dMass);
-      }
-      vNovelMasses.assign(setNovelMasses.begin(), setNovelMasses.end());
-
-      if (bKnownAllIdx)
-      {
-         bool bFragment = (iKnownIdxType == 1);
-         if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath,
-                                         sParamsFile,
-                                         sNovelFastaPath,
-                                         bFragment,
-                                         iThreadOverride,
-                                         sErrorMsg))
-         {
-            logerr(sErrorMsg);
-            exit(1);
-         }
-
-         sNovelScoringDatabase = sNovelFastaPath + ".idx";
-         vTempArtifacts.push_back(sNovelScoringDatabase);
-      }
-      else
-      {
-         sNovelScoringDatabase = sNovelFastaPath;
-      }
-
-      LogStageTiming("novel mass calculation", tStageStart, tProgramStart);
-   }
-   else
-   {
-      logout(" Warning - no novel peptides remain after subtraction against known database(s); spectrum filtering will likely remove all scans.\n");
    }
 }

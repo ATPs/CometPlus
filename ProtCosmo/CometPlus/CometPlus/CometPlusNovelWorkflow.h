@@ -21,6 +21,7 @@
 #include <vector>
 
 void RunNovelWorkflowIfNeeded(const NovelModeOptions& novelOpts,
+                              CometInterfaces::ICometSearchManager* pSearchMgr,
                               const std::vector<string>& vKnownDatabases,
                               bool bKnownAllIdx,
                               int iKnownIdxType,

@@ -710,6 +710,7 @@ void ProcessCmdLine(int argc,
    vector<NovelPeptideRecord> vNovelRecords;
 
    RunNovelWorkflowIfNeeded(novelOpts,
+                            pSearchMgr,
                             vKnownDatabases,
                             bKnownAllIdx,
                             iKnownIdxType,

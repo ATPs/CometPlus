@@ -149,7 +149,7 @@ void Usage(char *pszCmd,
    logout("                 --output-folder <dir>  output directory (default: current directory)\n");
    logout("                 --novel_protein <file> novel protein FASTA; digested using Comet settings\n");
    logout("                 --novel_peptide <file> novel peptide input (FASTA or tokenized text)\n");
-   logout("                 --output_internal_novel_peptide <file> write internal novel peptide TSV\n");
+   logout("                 --output_internal_novel_peptide <file> write detailed internal novel peptide TSV\n");
    logout("                 --internal_novel_peptide <file> reuse internal novel peptide TSV input\n");
    logout("                 --stop-after-saving-novel-peptide stop after writing internal novel peptide TSV\n");
    logout("                 --keep-tmp            keep temporary artifacts on exit for debugging\n");
@@ -257,6 +257,43 @@ void Usage(char *pszCmd,
          snprintf(szTmp, iSize, "         %s\n", sGuide.c_str());
          logout(szTmp);
       }
+
+      logout("\n");
+      logout(" Full help - dedicated CometPlus options\n");
+      logout("   --database <path>\n");
+      logout("      repeatable; provide one or more known DBs (all FASTA or all .idx, not mixed)\n");
+      logout("   --thread <n>\n");
+      logout("      override num_threads for this run\n");
+      logout("   --first-scan <n>, --last-scan <n>\n");
+      logout("      scan-range gate; can be used independently or together as a closed range\n");
+      logout("   --output-folder <dir>\n");
+      logout("      output root for result files and CometPlus temporary artifacts\n");
+      logout("   --novel_protein <fasta>\n");
+      logout("      digest novel proteins using current Comet settings before subtraction vs known DB\n");
+      logout("   --novel_peptide <file>\n");
+      logout("      novel peptide input (FASTA or tokenized text)\n");
+      logout("   --scan <file>, --scan_numbers <list>\n");
+      logout("      explicit scan gate; tokens use comma/space/tab/newline delimiters\n");
+      logout("   --output_internal_novel_peptide <file>\n");
+      logout("      write detailed internal TSV with columns:\n");
+      logout("         peptide, peptide_id, protein_id, peptide_with_mod, charge, mz, mz_window_min, mz_window_max\n");
+      logout("      column meanings:\n");
+      logout("         peptide: normalized sequence\n");
+      logout("         peptide_id: stable internal ID (e.g. COMETPLUS_NOVEL_1)\n");
+      logout("         protein_id: semicolon-separated source identifiers\n");
+      logout("         peptide_with_mod: variable-mod mass annotation\n");
+      logout("         charge/mz/mz_window_min/mz_window_max: tolerance-only precursor window row\n");
+      logout("   --internal_novel_peptide <file>\n");
+      logout("      accepts two TSV formats:\n");
+      logout("      1) legacy format (3 columns)\n");
+      logout("         peptide\tpeptide_id\tprotein_id\n");
+      logout("      2) detailed format (8 columns)\n");
+      logout("         peptide\tpeptide_id\tprotein_id\tpeptide_with_mod\tcharge\tmz\tmz_window_min\tmz_window_max\n");
+      logout("      detailed format enables direct precomputed-mass reuse for prefilter fast-path\n");
+      logout("   --stop-after-saving-novel-peptide\n");
+      logout("      requires --output_internal_novel_peptide; exit after TSV export (skip prefilter/search)\n");
+      logout("   --keep-tmp\n");
+      logout("      keep temporary artifacts instead of deleting them at exit\n");
 
       logout("\n");
    }

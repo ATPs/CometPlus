@@ -382,6 +382,7 @@ bool WritePrefilterWorkerJobFile(const InputFileInfo& inputFile,
                                  const string& sExplicitScansFile,
                                  bool bUseNovelMassFilter,
                                  const string& sNovelMassesFile,
+                                 const string& sInternalNovelPeptideFile,
                                  const NovelMassFilterContext& ctx,
                                  const string& sMassOffsetsFile,
                                  const string& sTempDir,
@@ -418,6 +419,7 @@ bool WritePrefilterWorkerJobFile(const InputFileInfo& inputFile,
    WriteKV("explicit_scans_file", sExplicitScansFile);
    WriteKV("use_novel_mass_filter", BoolTo01(bUseNovelMassFilter));
    WriteKV("novel_masses_file", sNovelMassesFile);
+   WriteKV("internal_novel_peptide_file", sInternalNovelPeptideFile);
    WriteKV("mass_offsets_file", sMassOffsetsFile);
    WriteKV("temp_dir", sTempDir);
    WriteKV("result_file", sResultFile);
