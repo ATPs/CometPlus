@@ -284,7 +284,7 @@ When any novel option or explicit scan option is used, CometPlus runs this flow:
 14. Filter spectra into temporary MGF files (parallel workers based on `--thread` or `num_threads`):
    - by explicit scan set if provided,
    - and, in novel mode, by precursor-mass plausibility against retained novel peptide masses.
-15. If novel mode has more than one spectrum input, merge filtered MGFs into one temporary MGF with per-spectrum source tags in `TITLE=` (`S<index>_<sanitized_input_stem>`).
+15. If novel mode has more than one spectrum input, merge filtered MGFs into one temporary MGF while preserving each spectrum `TITLE=`.
 16. Search:
    - merged novel path: one search input (one output set),
    - otherwise: one search input per filtered file (legacy behavior).
@@ -293,7 +293,7 @@ When any novel option or explicit scan option is used, CometPlus runs this flow:
    - printable target PSM all novel-only => keep spectrum,
    - printable target PSM mixed novel+known => keep only if every best-`Xcorr` tie is novel-only (no known assignment in best-score ties).
    With `decoy_search=2`, target and decoy records are retained/dropped together at spectrum level.
-18. In merged novel mode, Percolator `SpecId` keeps `<base>_<scan>_<charge>_<rank>` format, but `base` is read from each spectrum nativeID source tag (instead of a global file basename) to prevent cross-input collisions.
+18. In merged novel mode, Percolator `SpecId` keeps `<base>_<scan>_<charge>_<rank>` format, and `base` is read from each spectrum `TITLE=` prefix. Input basenames should therefore be unique across merged inputs.
 
 ### Input Validation and Error Conditions
 

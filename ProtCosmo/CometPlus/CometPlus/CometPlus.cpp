@@ -549,6 +549,37 @@ static string NormalizePathKeyLocal(const string& sPath)
    return sNorm;
 }
 
+static bool EndsWithIgnoreCaseLocal(const string& sValue, const string& sSuffix)
+{
+   if (sValue.length() < sSuffix.length())
+      return false;
+
+   size_t iOffset = sValue.length() - sSuffix.length();
+   for (size_t i = 0; i < sSuffix.length(); ++i)
+   {
+      if (tolower((unsigned char)sValue[iOffset + i]) != tolower((unsigned char)sSuffix[i]))
+         return false;
+   }
+
+   return true;
+}
+
+static bool IsMzMLbPath(const string& sPath)
+{
+   return EndsWithIgnoreCaseLocal(sPath, ".mzMLb");
+}
+
+static bool HasMzMLbInputs(const vector<InputFileInfo*>& vInputs)
+{
+   for (size_t i = 0; i < vInputs.size(); ++i)
+   {
+      if (vInputs.at(i) != NULL && IsMzMLbPath(vInputs.at(i)->szFileName))
+         return true;
+   }
+
+   return false;
+}
+
 static string ResolveInternalOutputPath(const string& sPath, const string& sOutputFolder)
 {
    if (sPath.empty())
@@ -1990,6 +2021,17 @@ void ProcessCmdLine(int argc,
    if (iPrefilterThreads < 1)
       iPrefilterThreads = 1;
 
+   if (iPrefilterThreads > 1 && HasMzMLbInputs(vParsedInputs))
+   {
+      iPrefilterThreads = 1;
+      char szWarnBuf[1024];
+      snprintf(szWarnBuf,
+               sizeof(szWarnBuf),
+               " [%s] warning: mzMLb input detected; forcing scan prefilter worker_threads=1 for stability.\n",
+               GetLocalTimestampString().c_str());
+      logout(szWarnBuf);
+   }
+
    char szPrefilterStart[1024];
    snprintf(szPrefilterStart,
             sizeof(szPrefilterStart),
@@ -2110,15 +2152,8 @@ void ProcessCmdLine(int argc,
       vMergeInputs.reserve(vPrefilterResults.size());
       for (size_t i = 0; i < vPrefilterResults.size(); ++i)
       {
-         string sInputStem = ComputeInputBaseName(vPrefilterResults.at(i).sOriginalPath);
-         string sSourceLabel;
-         if (!BuildNovelMergedSourceLabel(i + 1, sInputStem, sSourceLabel, sErrorMsg))
-         {
-            logerr(sErrorMsg);
-            exit(1);
-         }
-
-         vMergeInputs.push_back(std::make_pair(vPrefilterResults.at(i).sTempMgfPath, sSourceLabel));
+         // Keep original TITLE values from filtered MGF shards when basenames are unique.
+         vMergeInputs.push_back(std::make_pair(vPrefilterResults.at(i).sTempMgfPath, ""));
       }
 
       string sMergedMgfPath;

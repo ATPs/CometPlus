@@ -224,7 +224,7 @@ Execution modes:
 2. Multi-input novel (`novelMode && input_count > 1`):
    - filtered MGF generation runs in parallel workers,
    - per-input filtered MGFs are merged into one temporary MGF,
-   - merged `TITLE` prefixes use source labels `S<1-based-index>_<sanitized_input_stem>`,
+   - merged MGF preserves per-spectrum original `TITLE=` values,
    - search runs once on the merged file.
 
 ### 7.2 Keep/drop logic per spectrum
@@ -463,7 +463,7 @@ Rule:
    - keep only if every PSM tied at `bestXcorr` is novel-only,
    - drop if any `bestXcorr`-tied PSM includes a known assignment.
 5. With `decoy_search=2`, once a spectrum passes target-side gate, target and decoy sides are both kept for that spectrum.
-6. In merged novel mode, Percolator `SpecId` keeps `<base>_<scan>_<charge>_<rank>` style, but `base` is extracted from per-spectrum nativeID source tag (`TITLE` prefix) rather than a single global basename, preventing cross-input collisions.
+6. In merged novel mode, Percolator `SpecId` keeps `<base>_<scan>_<charge>_<rank>` style, and `base` is extracted from per-spectrum nativeID source tag (`TITLE` prefix); input basenames should be unique across merged inputs.
 
 Non-novel mode behavior is unchanged.
 

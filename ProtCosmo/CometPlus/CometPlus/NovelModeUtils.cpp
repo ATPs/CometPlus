@@ -559,7 +559,6 @@ bool MergeFilteredMgfFilesWithSourceTag(
    for (size_t i = 0; i < vFilteredMgfAndSourceLabel.size(); ++i)
    {
       const string& sInputMgf = vFilteredMgfAndSourceLabel.at(i).first;
-      const string& sSourceLabel = vFilteredMgfAndSourceLabel.at(i).second;
 
       std::ifstream inFile(sInputMgf.c_str(), std::ios::in | std::ios::binary);
       if (!inFile.good())
@@ -577,16 +576,7 @@ bool MergeFilteredMgfFilesWithSourceTag(
          if (!sLine.empty() && sLine[sLine.length() - 1] == '\r')
             sLine.erase(sLine.length() - 1);
 
-         if (StartsWithIgnoreCaseLocal(sLine, "TITLE="))
-         {
-            string sRewritten;
-            RewriteMgfTitleWithSourceLabel(sLine, sSourceLabel, sRewritten);
-            outFile << sRewritten << "\n";
-         }
-         else
-         {
-            outFile << sLine << "\n";
-         }
+         outFile << sLine << "\n";
       }
    }
 
@@ -1685,6 +1675,87 @@ static bool MatchNovelMassForExperimental(const vector<double>& vSortedNovelMass
    return false;
 }
 
+static void CollectSpectrumCharges(Spectrum& spec, vector<int>& vCharges)
+{
+   vCharges.clear();
+   set<int> setCharges;
+
+   for (int i = 0; i < spec.sizeZ(); ++i)
+   {
+      int z = spec.atZ(i).z;
+      if (z > 0)
+         setCharges.insert(z);
+   }
+
+   if (setCharges.empty())
+   {
+      int iCharge = spec.getCharge();
+      if (iCharge > 0)
+         setCharges.insert(iCharge);
+   }
+
+   for (auto it = setCharges.begin(); it != setCharges.end(); ++it)
+      vCharges.push_back(*it);
+}
+
+static bool WriteFilteredSpectrumToMgf(FILE* fpOut,
+                                       Spectrum& spec,
+                                       const string& sTitlePrefix)
+{
+   if (fpOut == NULL)
+      return false;
+
+   vector<int> vCharges;
+   CollectSpectrumCharges(spec, vCharges);
+
+   int iScan1 = spec.getScanNumber();
+   int iScan2 = spec.getScanNumber(true);
+   if (iScan2 <= 0)
+      iScan2 = iScan1;
+
+   int iTitleCharge = 0;
+   if (vCharges.size() == 1)
+      iTitleCharge = vCharges.at(0);
+
+   double dPepMass = spec.getMZ();
+   if (isEqual(dPepMass, 0.0) && spec.sizeMZ() > 0)
+      dPepMass = spec.getMZ(0);
+   if (isEqual(dPepMass, 0.0) && spec.sizeZ() > 0 && spec.atZ(0).z > 0)
+      dPepMass = (spec.atZ(0).mh + (spec.atZ(0).z - 1) * PROTON_MASS) / spec.atZ(0).z;
+
+   fprintf(fpOut, "BEGIN IONS\n");
+   fprintf(fpOut, "PEPMASS=%.6f\n", dPepMass);
+   if (!vCharges.empty())
+   {
+      fprintf(fpOut, "CHARGE=");
+      for (size_t i = 0; i < vCharges.size(); ++i)
+      {
+         if (i > 0)
+         {
+            if (i + 1 == vCharges.size())
+               fprintf(fpOut, " and ");
+            else
+               fprintf(fpOut, ",");
+         }
+         fprintf(fpOut, "%d+", vCharges.at(i));
+      }
+      fprintf(fpOut, "\n");
+   }
+   fprintf(fpOut, "RTINSECONDS=%d\n", (int)(spec.getRTime() * 60));
+   fprintf(fpOut, "TITLE=%s.%d.%d.%d %d %.4f\n",
+           sTitlePrefix.c_str(),
+           iScan1,
+           iScan2,
+           iTitleCharge,
+           0,
+           spec.getRTime());
+   for (int i = 0; i < spec.size(); ++i)
+      fprintf(fpOut, "%.4f %.1f\n", spec.at(i).mz, spec.at(i).intensity);
+   fprintf(fpOut, "END IONS\n");
+
+   return (ferror(fpOut) == 0);
+}
+
 bool FilterInputFileToTempMgf(const InputFileInfo& inputFile,
                               const set<int>& setExplicitScans,
                               bool bUseExplicitScans,
@@ -1708,6 +1779,9 @@ bool FilterInputFileToTempMgf(const InputFileInfo& inputFile,
 
    vector<double> vSortedNovelMasses = vNovelMasses;
    std::sort(vSortedNovelMasses.begin(), vSortedNovelMasses.end());
+   string sTitlePrefix = ComputeInputBaseName(inputFile.szFileName);
+   if (sTitlePrefix.empty())
+      sTitlePrefix = "input";
 
    auto IsInRequestedRange = [&](int iScanNumber) -> bool
    {
@@ -1897,7 +1971,13 @@ bool FilterInputFileToTempMgf(const InputFileInfo& inputFile,
 
          if (bPassExplicit && PassNovelMassPlausibility(spec))
          {
-            mstReader.appendMGFFileHandle(fpOut, spec);
+            if (!WriteFilteredSpectrumToMgf(fpOut, spec, sTitlePrefix))
+            {
+               fclose(fpOut);
+               remove(sOutTempMgfPath.c_str());
+               sErrorMsg = " Error - failed writing filtered MGF spectrum to \"" + sOutTempMgfPath + "\".\n";
+               return false;
+            }
             iNumScansKept++;
          }
       }
