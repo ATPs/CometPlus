@@ -27,11 +27,26 @@ else
 endif
 
 EXECNAME = cometplus
+WORKER_EXECNAME = cometplus_prefilter_worker
 OBJDIR = obj
 OBJS = $(OBJDIR)/CometPlus.o
 OBJS += $(OBJDIR)/NovelModeUtils.o
+OBJS += $(OBJDIR)/NovelModeUtilsMerge.o
+OBJS += $(OBJDIR)/NovelModeUtilsIdx.o
+OBJS += $(OBJDIR)/NovelModeUtilsPrefilter.o
+OBJS += $(OBJDIR)/CometPlusProcessCmd.o
+OBJS += $(OBJDIR)/CometPlusRuntimeUtils.o
+OBJS += $(OBJDIR)/CometPlusNovelWorkflow.o
+OBJS += $(OBJDIR)/CometPlusPrefilterWorkflow.o
+OBJS += $(OBJDIR)/CometPlusPrintParams.o
 OBJS += $(OBJDIR)/CometPlusParamHelp.o
 OBJS += $(OBJDIR)/CometPlusParamParser.o
+WORKER_OBJS = $(OBJDIR)/PrefilterWorker.o
+WORKER_OBJS += $(OBJDIR)/NovelModeUtils.o
+WORKER_OBJS += $(OBJDIR)/NovelModeUtilsMerge.o
+WORKER_OBJS += $(OBJDIR)/NovelModeUtilsIdx.o
+WORKER_OBJS += $(OBJDIR)/NovelModeUtilsPrefilter.o
+DEPS_STAMP = $(OBJDIR)/.deps_built
 
 LIBPATHS = -L$(ROOT)/$(MSTOOLKIT) -L$(ROOT)/CometSearch -L$(ROOT)/$(ASCOREPRO)
 LIBS = -lcometsearch -lmstoolkit -lmstoolkitextern -lascorepro -lm -lpthread
@@ -57,25 +72,36 @@ endif
 
 ifeq ($(STATIC),1)
    OBJS += $(OBJDIR)/StaticCompat.o
+   WORKER_OBJS += $(OBJDIR)/StaticCompat.o
    LDFLAGS += -static
 endif
 
-all: $(EXECNAME)
+all: $(EXECNAME) $(WORKER_EXECNAME)
 
 static:
 	$(MAKE) STATIC=1 all
 
-$(EXECNAME): $(OBJS)
+$(DEPS_STAMP): | $(OBJDIR)
 ifeq ($(WITH_MZMLB),1)
 	$(MAKE) -C $(ROOT)/$(MSTOOLKIT) CC=$(CC) CXX=$(CXX) $(MSTOOLKIT_MAKE_ARGS) clean
 endif
 	$(MAKE) -C $(ROOT)/$(MSTOOLKIT) CC=$(CC) CXX=$(CXX) $(MSTOOLKIT_MAKE_ARGS) all
 	$(MAKE) -C $(ROOT)/$(ASCOREPRO) CC=$(CC) CXX=$(CXX) all
 	$(MAKE) -C $(COMETSEARCH) CC=$(CC) CXX=$(CXX) all
+	@touch $(DEPS_STAMP)
+
+$(EXECNAME): $(OBJS) $(DEPS_STAMP)
 ifeq ($(UNAME_S),Darwin)
 	${CXX} $(OBJS) -headerpad_max_install_names -o ${EXECNAME} $(LDFLAGS) $(CXXFLAGS) $(LIBPATHS) $(LIBS)
 else
 	${CXX} $(OBJS) -o ${EXECNAME} $(LDFLAGS) $(CXXFLAGS) $(LIBPATHS) $(LIBS)
+endif
+
+$(WORKER_EXECNAME): $(WORKER_OBJS) $(DEPS_STAMP)
+ifeq ($(UNAME_S),Darwin)
+	${CXX} $(WORKER_OBJS) -headerpad_max_install_names -o ${WORKER_EXECNAME} $(LDFLAGS) $(CXXFLAGS) $(LIBPATHS) $(LIBS)
+else
+	${CXX} $(WORKER_OBJS) -o ${WORKER_EXECNAME} $(LDFLAGS) $(CXXFLAGS) $(LIBPATHS) $(LIBS)
 endif
 
 $(OBJDIR):
@@ -87,14 +113,41 @@ $(OBJDIR)/CometPlus.o: CometPlus/CometPlus.cpp | $(OBJDIR)
 $(OBJDIR)/NovelModeUtils.o: CometPlus/NovelModeUtils.cpp | $(OBJDIR)
 	${CXX} ${CXXFLAGS} CometPlus/NovelModeUtils.cpp -c -o $@
 
+$(OBJDIR)/NovelModeUtilsMerge.o: CometPlus/NovelModeUtilsMerge.cpp | $(OBJDIR)
+	${CXX} ${CXXFLAGS} CometPlus/NovelModeUtilsMerge.cpp -c -o $@
+
+$(OBJDIR)/NovelModeUtilsIdx.o: CometPlus/NovelModeUtilsIdx.cpp | $(OBJDIR)
+	${CXX} ${CXXFLAGS} CometPlus/NovelModeUtilsIdx.cpp -c -o $@
+
+$(OBJDIR)/NovelModeUtilsPrefilter.o: CometPlus/NovelModeUtilsPrefilter.cpp | $(OBJDIR)
+	${CXX} ${CXXFLAGS} CometPlus/NovelModeUtilsPrefilter.cpp -c -o $@
+
+$(OBJDIR)/CometPlusProcessCmd.o: CometPlus/CometPlusProcessCmd.cpp | $(OBJDIR)
+	${CXX} ${CXXFLAGS} CometPlus/CometPlusProcessCmd.cpp -c -o $@
+
+$(OBJDIR)/CometPlusRuntimeUtils.o: CometPlus/CometPlusRuntimeUtils.cpp | $(OBJDIR)
+	${CXX} ${CXXFLAGS} CometPlus/CometPlusRuntimeUtils.cpp -c -o $@
+
+$(OBJDIR)/CometPlusNovelWorkflow.o: CometPlus/CometPlusNovelWorkflow.cpp | $(OBJDIR)
+	${CXX} ${CXXFLAGS} CometPlus/CometPlusNovelWorkflow.cpp -c -o $@
+
+$(OBJDIR)/CometPlusPrefilterWorkflow.o: CometPlus/CometPlusPrefilterWorkflow.cpp | $(OBJDIR)
+	${CXX} ${CXXFLAGS} CometPlus/CometPlusPrefilterWorkflow.cpp -c -o $@
+
+$(OBJDIR)/CometPlusPrintParams.o: CometPlus/CometPlusPrintParams.cpp | $(OBJDIR)
+	${CXX} ${CXXFLAGS} CometPlus/CometPlusPrintParams.cpp -c -o $@
+
 $(OBJDIR)/CometPlusParamHelp.o: CometPlus/CometPlusParamHelp.cpp | $(OBJDIR)
 	${CXX} ${CXXFLAGS} CometPlus/CometPlusParamHelp.cpp -c -o $@
 
 $(OBJDIR)/CometPlusParamParser.o: CometPlus/CometPlusParamParser.cpp | $(OBJDIR)
 	${CXX} ${CXXFLAGS} CometPlus/CometPlusParamParser.cpp -c -o $@
 
+$(OBJDIR)/PrefilterWorker.o: CometPlus/PrefilterWorker.cpp | $(OBJDIR)
+	${CXX} ${CXXFLAGS} CometPlus/PrefilterWorker.cpp -c -o $@
+
 $(OBJDIR)/StaticCompat.o: CometPlus/StaticCompat.cpp | $(OBJDIR)
 	${CC} -O2 -c CometPlus/StaticCompat.cpp -o $@
 
 clean:
-	rm -rf $(OBJDIR) $(EXECNAME)
+	rm -rf $(OBJDIR) $(EXECNAME) $(WORKER_EXECNAME)

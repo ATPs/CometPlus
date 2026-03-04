@@ -18,8 +18,10 @@ Maintain `cometplus` as an additive layer over upstream-style Comet behavior:
 ## Ownership Boundaries
 ### Preferred location for new work
 - `ProtCosmo/CometPlus/CometPlus/CometPlus.cpp`
+- `ProtCosmo/CometPlus/CometPlus/`
 - `ProtCosmo/CometPlus/Makefile`
 - `ProtCosmo/CometPlus/*.md`
+each new c++ code file best not more than 1000 lines. include instructions about the major aim of each file in folder `ProtCosmo/CometPlus/CometPlus/`
 
 ### Allowed minimal hooks in core engine
 - `CometSearch/CometPlusMultiDB.{h,cpp}`
@@ -28,6 +30,7 @@ Maintain `cometplus` as an additive layer over upstream-style Comet behavior:
 - `CometSearch/CometFragmentIndex.cpp`
 - `CometSearch/CometMassSpecUtils.cpp`
 - `CometSearch/Makefile`
+
 
 Avoid broad refactors outside these files for CometPlus features.
 

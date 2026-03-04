@@ -2,10 +2,62 @@
 
 This guide documents how to build `cometplus` reproducibly in this environment, including how `/data/p/hdf5/hdf5-1.14.4-3_build_static_cpp` was created and how to prepare a working HDF5 prefix for mzMLb support.
 
+## Required Build Target (Production)
+
+For normal CometPlus delivery in this project, the required target is:
+
+- both binaries are **static**
+  - `ProtCosmo/CometPlus/cometplus`
+  - `ProtCosmo/CometPlus/cometplus_prefilter_worker`
+- both binaries are built with **mzMLb support enabled** (`WITH_MZMLB=1`)
+
+Treat `WITH_MZMLB=0` as a fallback/debug profile only.
+
+## Daily Quick Start (Copy/Paste)
+
+If you only need a correct build quickly, use one of these blocks.
+
+### Fast Path (Recommended): `WITH_MZMLB=1` (static + mzMLb)
+
+```bash
+cd /data/p/comet/Comet
+export PATH=/data/p/anaconda3/bin:$PATH
+HDF5_DIR=/data/p/hdf5/hdf5-1.14.4-3_build_native_cpp
+
+make -C MSToolkit clean
+make -C ProtCosmo/CometPlus clean
+make -C ProtCosmo/CometPlus static WITH_MZMLB=1 HDF5_DIR="$HDF5_DIR"
+
+file ProtCosmo/CometPlus/cometplus ProtCosmo/CometPlus/cometplus_prefilter_worker
+ldd ProtCosmo/CometPlus/cometplus || true
+ldd ProtCosmo/CometPlus/cometplus_prefilter_worker || true
+```
+
+### Optional Debug Path: `WITH_MZMLB=0` (no mzMLb)
+
+```bash
+cd /data/p/comet/Comet
+export PATH=/data/p/anaconda3/bin:$PATH
+
+make -C MSToolkit clean
+make -C ProtCosmo/CometPlus clean
+make -C ProtCosmo/CometPlus static WITH_MZMLB=0
+
+file ProtCosmo/CometPlus/cometplus ProtCosmo/CometPlus/cometplus_prefilter_worker
+ldd ProtCosmo/CometPlus/cometplus
+ldd ProtCosmo/CometPlus/cometplus_prefilter_worker
+```
+
+### Most Common Build Mistake
+
+When switching between `WITH_MZMLB=0` and `WITH_MZMLB=1`, always run `make -C MSToolkit clean` first to avoid stale objects causing wrong link behavior.
+
 ## Scope
 
 - Repository root: `/data/p/comet/Comet`
-- Binary target: `/data/p/comet/Comet/ProtCosmo/CometPlus/cometplus`
+- Binary targets:
+  - `/data/p/comet/Comet/ProtCosmo/CometPlus/cometplus`
+  - `/data/p/comet/Comet/ProtCosmo/CometPlus/cometplus_prefilter_worker`
 - Static build target: `ldd` prints `not a dynamic executable`
 - Profiles covered:
   - `WITH_MZMLB=0` (no mzMLb support, no HDF5 linkage)
@@ -187,21 +239,27 @@ From repo root:
 
 ```bash
 cd /data/p/comet/Comet
+make -C MSToolkit clean
 make -C ProtCosmo/CometPlus clean
 make -C ProtCosmo/CometPlus static WITH_MZMLB=0
 ```
 
+Note:
+- `MSToolkit` may keep previous HDF5-enabled objects from an earlier `WITH_MZMLB=1` build. Running `make -C MSToolkit clean` first avoids accidental HDF5 link references in `WITH_MZMLB=0` builds.
+
 Verify:
 
 ```bash
-file ProtCosmo/CometPlus/cometplus
+file ProtCosmo/CometPlus/cometplus ProtCosmo/CometPlus/cometplus_prefilter_worker
 ldd ProtCosmo/CometPlus/cometplus
+ldd ProtCosmo/CometPlus/cometplus_prefilter_worker
 nm -A ProtCosmo/CometPlus/cometplus 2>/dev/null | rg -i "\\bH5[A-Za-z0-9_]*\\b|hdf5"
+nm -A ProtCosmo/CometPlus/cometplus_prefilter_worker 2>/dev/null | rg -i "\\bH5[A-Za-z0-9_]*\\b|hdf5"
 ```
 
 Expected:
 
-- static binary (`statically linked`, `not a dynamic executable`)
+- both binaries are static (`statically linked`, `not a dynamic executable`)
 - no `H5`/`hdf5` symbols
 
 ## Build CometPlus: Static With mzMLb (`WITH_MZMLB=1`)
@@ -232,17 +290,19 @@ make -C ProtCosmo/CometPlus static \
 Verify:
 
 ```bash
-ls -lh ProtCosmo/CometPlus/cometplus
-file ProtCosmo/CometPlus/cometplus
+ls -lh ProtCosmo/CometPlus/cometplus ProtCosmo/CometPlus/cometplus_prefilter_worker
+file ProtCosmo/CometPlus/cometplus ProtCosmo/CometPlus/cometplus_prefilter_worker
 ldd ProtCosmo/CometPlus/cometplus || true
+ldd ProtCosmo/CometPlus/cometplus_prefilter_worker || true
 nm -A ProtCosmo/CometPlus/cometplus 2>/dev/null | rg -i "\\bH5[A-Za-z0-9_]*\\b|hdf5" | head
+nm -A ProtCosmo/CometPlus/cometplus_prefilter_worker 2>/dev/null | rg -i "\\bH5[A-Za-z0-9_]*\\b|hdf5" | head
 strings ProtCosmo/CometPlus/cometplus | rg -n "mzMLb|Supported input formats include"
 ```
 
 Expected:
 
-- static binary (`statically linked`, `not a dynamic executable`)
-- `H5...` symbols present
+- both binaries are static (`statically linked`, `not a dynamic executable`)
+- `H5...` symbols present in binaries when `WITH_MZMLB=1`
 - `mzMLb` appears in strings/help text
 - typical size increase vs dynamic build in this environment: dynamic ~`8.7M`, static ~`16M`
 
@@ -288,3 +348,7 @@ IN=/XCLabServer002_fastIO/cometplus_test_mzmlb/data/1554877.mzMLb
 - Binary unexpectedly small (for example ~4 MB)
   - Cause: dynamic build or non-static path used.
   - Fix: run `make -C ProtCosmo/CometPlus static ...` and recheck with `file` + `ldd`.
+
+- `WITH_MZMLB=0` still reports unresolved `H5*` symbols at link time
+  - Cause: stale `MSToolkit` objects from a previous HDF5-enabled build.
+  - Fix: `make -C MSToolkit clean` then rebuild CometPlus with `WITH_MZMLB=0`.
