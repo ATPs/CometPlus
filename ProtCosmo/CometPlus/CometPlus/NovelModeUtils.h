@@ -29,10 +29,24 @@ struct NovelModeOptions
    string sNovelPeptidePath;
    string sScanFilePath;
    string sScanNumbers;
+   string sOutputFolder;
+   string sOutputInternalNovelPeptidePath;
+   string sInternalNovelPeptidePath;
+   bool bStopAfterSavingNovelPeptide = false;
+
+   bool HasNovelInputOptions() const
+   {
+      return !sNovelProteinPath.empty() || !sNovelPeptidePath.empty();
+   }
+
+   bool HasInternalNovelInput() const
+   {
+      return !sInternalNovelPeptidePath.empty();
+   }
 
    bool HasNovelMode() const
    {
-      return !sNovelProteinPath.empty() || !sNovelPeptidePath.empty();
+      return HasNovelInputOptions() || HasInternalNovelInput();
    }
 
    bool HasExplicitScanFilter() const
@@ -46,6 +60,14 @@ struct PeptideMassEntry
    string sPeptide;
    double dMass;
    bool bDecoy;
+   vector<string> vProteinIds;
+};
+
+struct NovelPeptideRecord
+{
+   string sPeptide;
+   string sPeptideId;
+   vector<string> vProteinIds;
 };
 
 struct NovelMassFilterContext
@@ -82,6 +104,7 @@ bool BuildTemporaryParamsFile(const string& sBaseParamsPath,
                               string& sErrorMsg);
 bool ParsePeptideIdxEntries(const string& sIdxPath,
                             vector<PeptideMassEntry>& vEntries,
+                            bool bLoadProteinIds,
                             string& sErrorMsg);
 bool ParseFragmentIdxEntries(const string& sIdxPath,
                              vector<PeptideMassEntry>& vEntries,
@@ -104,7 +127,11 @@ bool RunCometForIndexGeneration(const string& sExecutablePath,
                                 const string& sParamsPath,
                                 const string& sDatabasePath,
                                 bool bFragmentIndex,
+                                int iThreadOverride,
                                 string& sErrorMsg);
+void SetCometPlusTempDirectory(const string& sTempDir);
+bool EnsureDirectoryExistsRecursive(const string& sDirPath,
+                                    string& sErrorMsg);
 bool CreateTempPath(const string& sPrefix,
                     const string& sSuffix,
                     string& sOutPath,
@@ -113,6 +140,13 @@ bool WritePeptidesToFasta(const vector<string>& vPeptides,
                           const string& sPrefix,
                           string& sOutPath,
                           string& sErrorMsg);
+bool WriteNovelRecordsToFasta(const vector<NovelPeptideRecord>& vRecords,
+                              const string& sPrefix,
+                              string& sOutPath,
+                              string& sErrorMsg);
+bool ParseInternalNovelPeptideFile(const string& sPath,
+                                   vector<NovelPeptideRecord>& vRecords,
+                                   string& sErrorMsg);
 bool BuildNovelMassFilterContext(CometInterfaces::ICometSearchManager* pSearchMgr,
                                  NovelMassFilterContext& ctx,
                                  string& sErrorMsg);

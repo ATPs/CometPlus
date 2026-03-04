@@ -22,12 +22,14 @@
 #include "NovelModeUtils.h"
 #include "githubsha.h"
 #include <algorithm>
+#include <chrono>
 #include <cerrno>
 #include <climits>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <unordered_map>
 #include <unordered_set>
 #include <set>
@@ -36,6 +38,7 @@
 #include <sstream>
 #include <iterator>
 #include <functional>
+#include <sys/stat.h>
 #ifndef _WIN32
 #include <unistd.h>
 #include <sys/types.h>
@@ -144,8 +147,12 @@ void Usage(char *pszCmd,
    logout("                 --name <name>          alias for -N<name>\n");
    logout("                 -D<dbase>  to specify a sequence database, overriding entry in parameters file\n");
    logout("                 --database <dbase>     repeatable; supports multi FASTA or multi .idx\n");
+   logout("                 --output-folder <dir>  output directory (default: current directory)\n");
    logout("                 --novel_protein <file> novel protein FASTA; digested using Comet settings\n");
    logout("                 --novel_peptide <file> novel peptide input (FASTA or tokenized text)\n");
+   logout("                 --output_internal_novel_peptide <file> write internal novel peptide TSV\n");
+   logout("                 --internal_novel_peptide <file> reuse internal novel peptide TSV input\n");
+   logout("                 --stop-after-saving-novel-peptide stop after writing internal novel peptide TSV\n");
    logout("                 --scan <file>          scan filter file; delimiters: comma/space/tab/newline\n");
    logout("                 --scan_numbers <list>  explicit scan list, e.g. 1001,1002,1003\n");
    logout("                 note: novel mode requires known DB via --database or params database_name\n");
@@ -449,6 +456,210 @@ bool ParseCmdLine(char *cmd, InputFileInfo *pInputFile, ICometSearchManager *pSe
    return true;
 } // ParseCmdLine
 
+static bool IsPathSeparatorLocal(char c)
+{
+   return c == '/' || c == '\\';
+}
+
+static bool ContainsPathSeparator(const string& sPath)
+{
+   for (size_t i = 0; i < sPath.length(); ++i)
+   {
+      if (IsPathSeparatorLocal(sPath[i]))
+         return true;
+   }
+   return false;
+}
+
+static bool IsAbsolutePathLocal(const string& sPath)
+{
+   if (sPath.empty())
+      return false;
+
+   if (IsPathSeparatorLocal(sPath[0]))
+      return true;
+
+#ifdef _WIN32
+   if (sPath.length() >= 2 && isalpha((unsigned char)sPath[0]) && sPath[1] == ':')
+      return true;
+#endif
+
+   return false;
+}
+
+static string JoinPathLocal(const string& sDir, const string& sName)
+{
+   if (sDir.empty() || sDir == ".")
+      return sName;
+   if (sName.empty())
+      return sDir;
+   if (IsAbsolutePathLocal(sName))
+      return sName;
+   if (IsPathSeparatorLocal(sDir[sDir.length() - 1]))
+      return sDir + sName;
+#ifdef _WIN32
+   return sDir + "\\" + sName;
+#else
+   return sDir + "/" + sName;
+#endif
+}
+
+static string GetDirNameLocal(const string& sPath)
+{
+   size_t iPos = sPath.find_last_of("/\\");
+   if (iPos == string::npos)
+      return "";
+   if (iPos == 0)
+      return sPath.substr(0, 1);
+   return sPath.substr(0, iPos);
+}
+
+static bool FileExistsLocal(const string& sPath)
+{
+   struct stat st;
+   return stat(sPath.c_str(), &st) == 0;
+}
+
+static string NormalizePathKeyLocal(const string& sPath)
+{
+   string sNorm = sPath;
+   for (size_t i = 0; i < sNorm.length(); ++i)
+   {
+      if (sNorm[i] == '\\')
+         sNorm[i] = '/';
+   }
+
+   while (sNorm.length() > 1 && sNorm[sNorm.length() - 1] == '/')
+      sNorm.erase(sNorm.length() - 1);
+
+   return sNorm;
+}
+
+static string ResolveInternalOutputPath(const string& sPath, const string& sOutputFolder)
+{
+   if (sPath.empty())
+      return sPath;
+
+   if (IsAbsolutePathLocal(sPath) || ContainsPathSeparator(sPath))
+      return sPath;
+
+   return JoinPathLocal(sOutputFolder, sPath);
+}
+
+static string GetLocalTimestampString()
+{
+   time_t tNow;
+   time(&tNow);
+   char szTime[64];
+   szTime[0] = '\0';
+   strftime(szTime, sizeof(szTime), "%Y-%m-%d %H:%M:%S", localtime(&tNow));
+   return szTime;
+}
+
+static void LogStageTiming(const string& sStage,
+                           const std::chrono::steady_clock::time_point& tStageStart,
+                           const std::chrono::steady_clock::time_point& tProgramStart)
+{
+   const auto tNow = std::chrono::steady_clock::now();
+   double dStageSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(tNow - tStageStart).count() / 1000.0;
+   double dTotalSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(tNow - tProgramStart).count() / 1000.0;
+
+   char szBuf[1024];
+   snprintf(szBuf,
+            sizeof(szBuf),
+            " [%s] %s done (%.3f sec; total %.3f sec)\n",
+            GetLocalTimestampString().c_str(),
+            sStage.c_str(),
+            dStageSeconds,
+            dTotalSeconds);
+   logout(szBuf);
+}
+
+static bool PathHasSeparatorForName(const string& sName)
+{
+   return ContainsPathSeparator(sName);
+}
+
+static void AppendPlannedOutputFilesForInput(const InputFileInfo& inputInfo,
+                                             const string& sBaseName,
+                                             const string& sOutputSuffix,
+                                             const string& sTxtExt,
+                                             bool bOutputSqtFile,
+                                             bool bOutputTxtFile,
+                                             bool bOutputPepXmlFile,
+                                             int iOutputMzidFile,
+                                             bool bOutputPercolatorFile,
+                                             int iDecoySearch,
+                                             vector<string>& vPlanned)
+{
+   auto AddPairSuffix = [&](const string& sDefaultExt,
+                            const string& sTargetExt,
+                            const string& sDecoyExt)
+   {
+#ifndef CRUX
+      (void)sTargetExt;
+#endif
+      bool bEntire = (inputInfo.iAnalysisType == AnalysisType_EntireFile);
+      string sRangeToken;
+      if (!bEntire)
+      {
+         sRangeToken = "." + std::to_string(inputInfo.iFirstScan) + "-" + std::to_string(inputInfo.iLastScan);
+      }
+
+      string sMain;
+      if (bEntire)
+         sMain = sBaseName + sOutputSuffix + sDefaultExt;
+      else
+         sMain = sBaseName + sOutputSuffix + sRangeToken + sDefaultExt;
+
+#ifdef CRUX
+      if (iDecoySearch == 2)
+      {
+         if (bEntire)
+            sMain = sBaseName + sOutputSuffix + sTargetExt;
+         else
+            sMain = sBaseName + sOutputSuffix + sRangeToken + sTargetExt;
+      }
+#endif
+
+      vPlanned.push_back(sMain);
+
+      if (iDecoySearch == 2)
+      {
+         string sDecoy;
+         if (bEntire)
+            sDecoy = sBaseName + sOutputSuffix + sDecoyExt;
+         else
+            sDecoy = sBaseName + sOutputSuffix + sRangeToken + sDecoyExt;
+         vPlanned.push_back(sDecoy);
+      }
+   };
+
+   if (bOutputSqtFile)
+      AddPairSuffix(".sqt", ".target.sqt", ".decoy.sqt");
+
+   if (bOutputTxtFile)
+      AddPairSuffix("." + sTxtExt, ".target." + sTxtExt, ".decoy." + sTxtExt);
+
+   if (bOutputPepXmlFile)
+      AddPairSuffix(".pep.xml", ".target.pep.xml", ".decoy.pep.xml");
+
+   if (iOutputMzidFile != 0)
+      AddPairSuffix(".mzid", ".target.mzid", ".decoy.mzid");
+
+   if (bOutputPercolatorFile)
+   {
+      bool bEntire = (inputInfo.iAnalysisType == AnalysisType_EntireFile);
+      if (bEntire)
+         vPlanned.push_back(sBaseName + sOutputSuffix + ".pin");
+      else
+      {
+         vPlanned.push_back(sBaseName + sOutputSuffix + "."
+               + std::to_string(inputInfo.iFirstScan) + "-" + std::to_string(inputInfo.iLastScan) + ".pin");
+      }
+   }
+}
+
 
 void ProcessCmdLine(int argc,
                     char *argv[],
@@ -458,6 +669,8 @@ void ProcessCmdLine(int argc,
                     string &sMergedDatabasePath,
                     vector<string> &vTempArtifacts)
 {
+   const auto tProgramStart = std::chrono::steady_clock::now();
+
    if (argc == 1)
    {
       string strErrorMsg = "\n Comet version " + g_sCometVersion + "\n\n"
@@ -476,11 +689,13 @@ void ProcessCmdLine(int argc,
    bool bSetBatchSize = false;
    bool bSetThreadOverride = false;
    bool bHelpFull = false;
+   bool bOutputFolderSpecified = false;
    int iFirstScan = 0;
    int iLastScan = 0;
    int iBatchSize = 0;
    int iThreadOverride = 0;
    string sOutputName;
+   string sResolvedOutputInternalNovelPath;
    vector<string> vDatabases;
    vector<string> vInputArgs;
    vector<CmdParamOverride> vCliParamOverrides;
@@ -560,6 +775,11 @@ void ProcessCmdLine(int argc,
             sOutputName = RequireValue(sName);
             bSetOutputName = true;
          }
+         else if (sName == "output-folder")
+         {
+            novelOpts.sOutputFolder = RequireValue(sName);
+            bOutputFolderSpecified = true;
+         }
          else if (sName == "first-scan")
          {
             iFirstScan = atoi(RequireValue(sName).c_str());
@@ -577,6 +797,24 @@ void ProcessCmdLine(int argc,
          else if (sName == "novel_peptide")
          {
             novelOpts.sNovelPeptidePath = RequireValue(sName);
+         }
+         else if (sName == "output_internal_novel_peptide")
+         {
+            novelOpts.sOutputInternalNovelPeptidePath = RequireValue(sName);
+         }
+         else if (sName == "internal_novel_peptide")
+         {
+            novelOpts.sInternalNovelPeptidePath = RequireValue(sName);
+         }
+         else if (sName == "stop-after-saving-novel-peptide")
+         {
+            if (!sValue.empty())
+            {
+               string strErrorMsg = " Error - option --stop-after-saving-novel-peptide does not take a value.\n";
+               logerr(strErrorMsg);
+               exit(1);
+            }
+            novelOpts.bStopAfterSavingNovelPeptide = true;
          }
          else if (sName == "scan")
          {
@@ -717,19 +955,16 @@ void ProcessCmdLine(int argc,
          exit(1);
       }
 
-      if (setParamKeys.find(sOverrideName) == setParamKeys.end())
-      {
-         string strErrorMsg = " Error - unknown option \"--" + sOverrideName
-            + "\"; key is not present in params file \"" + sParamsFile + "\".\n";
+         if (setParamKeys.find(sOverrideName) == setParamKeys.end())
+         {
+            string strErrorMsg = " Error - unknown option \"--" + sOverrideName
+               + "\"; key is not present in params file \"" + sParamsFile + "\".\n";
          logerr(strErrorMsg);
          exit(1);
       }
    }
 
    LoadParameters(szParamsFile, pSearchMgr, vCliParamOverrides);
-
-   if (bSetOutputName)
-      pSearchMgr->SetOutputFileBaseName(sOutputName.c_str());
 
    if (bSetFirstScan || bSetLastScan)
    {
@@ -770,15 +1005,62 @@ void ProcessCmdLine(int argc,
       pSearchMgr->SetParam("create_peptide_index", "1", 1);
    }
 
-   if ((bCreateFragmentIndex || bCreatePeptideIndex)
-         && (novelOpts.HasNovelMode() || novelOpts.HasExplicitScanFilter()))
+   if (!novelOpts.sOutputInternalNovelPeptidePath.empty() && !novelOpts.HasNovelInputOptions())
    {
-      string strErrorMsg = " Error - --novel_protein/--novel_peptide/--scan/--scan_numbers cannot be used with -i or -j.\n";
+      string strErrorMsg = " Error - --output_internal_novel_peptide requires --novel_protein and/or --novel_peptide.\n";
       logerr(strErrorMsg);
       exit(1);
    }
 
-   if ((novelOpts.HasNovelMode() || novelOpts.HasExplicitScanFilter()) && vInputArgs.empty())
+   if (novelOpts.HasInternalNovelInput() && novelOpts.HasNovelInputOptions())
+   {
+      string strErrorMsg = " Error - --internal_novel_peptide cannot be used together with --novel_protein or --novel_peptide.\n";
+      logerr(strErrorMsg);
+      exit(1);
+   }
+
+   if (novelOpts.bStopAfterSavingNovelPeptide && novelOpts.sOutputInternalNovelPeptidePath.empty())
+   {
+      string strErrorMsg = " Error - --stop-after-saving-novel-peptide requires --output_internal_novel_peptide.\n";
+      logerr(strErrorMsg);
+      exit(1);
+   }
+
+   if (bSetOutputName && bOutputFolderSpecified && PathHasSeparatorForName(sOutputName))
+   {
+      string strErrorMsg = " Error - when using --name with --output-folder, --name must be a base name without path separators.\n";
+      logerr(strErrorMsg);
+      exit(1);
+   }
+
+   if ((bCreateFragmentIndex || bCreatePeptideIndex)
+         && (novelOpts.HasNovelMode() || novelOpts.HasExplicitScanFilter()
+            || !novelOpts.sOutputInternalNovelPeptidePath.empty()))
+   {
+      string strErrorMsg = " Error - novel/scan subset options cannot be used with -i or -j.\n";
+      logerr(strErrorMsg);
+      exit(1);
+   }
+
+   if (novelOpts.sOutputFolder.empty())
+      novelOpts.sOutputFolder = ".";
+
+   {
+      string sErrorMsg;
+      if (!EnsureDirectoryExistsRecursive(novelOpts.sOutputFolder, sErrorMsg))
+      {
+         logerr(sErrorMsg);
+         exit(1);
+      }
+   }
+   SetCometPlusTempDirectory(novelOpts.sOutputFolder);
+
+   if (!novelOpts.sOutputInternalNovelPeptidePath.empty())
+      sResolvedOutputInternalNovelPath = ResolveInternalOutputPath(novelOpts.sOutputInternalNovelPeptidePath,
+                                                                   novelOpts.sOutputFolder);
+
+   bool bNeedInputSpectra = !novelOpts.bStopAfterSavingNovelPeptide;
+   if ((novelOpts.HasNovelMode() || novelOpts.HasExplicitScanFilter()) && vInputArgs.empty() && bNeedInputSpectra)
    {
       string strErrorMsg = " Error - at least one input spectrum file is required when using novel or scan subset options.\n";
       logerr(strErrorMsg);
@@ -841,15 +1123,158 @@ void ProcessCmdLine(int argc,
       }
    }
 
-   int iEqualIL = 1;
-   pSearchMgr->GetParamValue("equal_I_and_L", iEqualIL);
-   bool bTreatSameIL = (iEqualIL != 0);
+   vector<InputFileInfo*> vParsedInputs;
+   for (size_t i = 0; i < vInputArgs.size(); ++i)
+   {
+      InputFileInfo* pInputFileInfo = new InputFileInfo();
+      std::vector<char> vInput(vInputArgs.at(i).begin(), vInputArgs.at(i).end());
+      vInput.push_back('\0');
+
+      if (!ParseCmdLine(vInput.data(), pInputFileInfo, pSearchMgr))
+      {
+         string strErrorMsg = "\n Comet version " + g_sCometVersion + "\n\n"
+            + " Error - input file \"" + std::string(pInputFileInfo->szFileName) + "\" not found.\n";
+         logerr(strErrorMsg);
+         pvInputFiles.clear();
+         exit(1);
+      }
+
+      vParsedInputs.push_back(pInputFileInfo);
+   }
+
+   if (bSetOutputName && vParsedInputs.size() != 1)
+   {
+      string strErrorMsg = " Error - --name/-N can be used only when one input spectrum file is provided.\n";
+      logerr(strErrorMsg);
+      exit(1);
+   }
+
+   for (size_t i = 0; i < vParsedInputs.size(); ++i)
+   {
+      string sInputBaseStem;
+      if (bSetOutputName)
+         sInputBaseStem = sOutputName;
+      else
+         sInputBaseStem = ComputeInputBaseName(vParsedInputs.at(i)->szFileName);
+
+      if (sInputBaseStem.empty())
+      {
+         string strErrorMsg = " Error - cannot derive output basename for input file \"" + string(vParsedInputs.at(i)->szFileName) + "\".\n";
+         logerr(strErrorMsg);
+         exit(1);
+      }
+
+      string sOutputBase = JoinPathLocal(novelOpts.sOutputFolder, sInputBaseStem);
+      if (sOutputBase.length() >= SIZE_FILE)
+      {
+         string strErrorMsg = " Error - output basename path is too long: \"" + sOutputBase + "\".\n";
+         logerr(strErrorMsg);
+         exit(1);
+      }
+
+      strncpy(vParsedInputs.at(i)->szBaseName, sOutputBase.c_str(), SIZE_FILE - 1);
+      vParsedInputs.at(i)->szBaseName[SIZE_FILE - 1] = '\0';
+   }
 
    int iDecoySearch = 0;
    pSearchMgr->GetParamValue("decoy_search", iDecoySearch);
 
+   int iOutputInt = 0;
+   bool bOutputSqtFile = false;
+   bool bOutputTxtFile = false;
+   bool bOutputPepXmlFile = false;
+   int iOutputMzidFile = 0;
+   bool bOutputPercolatorFile = false;
+
+   if (pSearchMgr->GetParamValue("output_sqtfile", iOutputInt))
+      bOutputSqtFile = (iOutputInt != 0);
+   if (pSearchMgr->GetParamValue("output_txtfile", iOutputInt))
+      bOutputTxtFile = (iOutputInt != 0);
+   if (pSearchMgr->GetParamValue("output_pepxmlfile", iOutputInt))
+      bOutputPepXmlFile = (iOutputInt != 0);
+   if (pSearchMgr->GetParamValue("output_mzidentmlfile", iOutputInt))
+      iOutputMzidFile = iOutputInt;
+   if (pSearchMgr->GetParamValue("output_percolatorfile", iOutputInt))
+      bOutputPercolatorFile = (iOutputInt != 0);
+
+   string sOutputSuffix;
+   pSearchMgr->GetParamValue("output_suffix", sOutputSuffix);
+   string sTxtExt = "txt";
+   if (pSearchMgr->GetParamValue("text_file_extension", sTxtExt))
+   {
+      if (sTxtExt.empty())
+         sTxtExt = "txt";
+   }
+
+   if (!(bCreateFragmentIndex || bCreatePeptideIndex))
+   {
+      vector<string> vPlannedOutputs;
+      for (size_t i = 0; i < vParsedInputs.size(); ++i)
+      {
+         AppendPlannedOutputFilesForInput(*vParsedInputs.at(i),
+                                          vParsedInputs.at(i)->szBaseName,
+                                          sOutputSuffix,
+                                          sTxtExt,
+                                          bOutputSqtFile,
+                                          bOutputTxtFile,
+                                          bOutputPepXmlFile,
+                                          iOutputMzidFile,
+                                          bOutputPercolatorFile,
+                                          iDecoySearch,
+                                          vPlannedOutputs);
+      }
+
+      if (!sResolvedOutputInternalNovelPath.empty())
+         vPlannedOutputs.push_back(sResolvedOutputInternalNovelPath);
+
+      unordered_map<string, vector<string>> mPathToSources;
+      unordered_set<string> setExistingSeen;
+      vector<string> vExisting;
+      for (size_t i = 0; i < vPlannedOutputs.size(); ++i)
+      {
+         string sPathKey = NormalizePathKeyLocal(vPlannedOutputs.at(i));
+         mPathToSources[sPathKey].push_back(vPlannedOutputs.at(i));
+         if (FileExistsLocal(vPlannedOutputs.at(i)) && setExistingSeen.insert(sPathKey).second)
+            vExisting.push_back(vPlannedOutputs.at(i));
+      }
+
+      vector<string> vInternalConflicts;
+      for (auto it = mPathToSources.begin(); it != mPathToSources.end(); ++it)
+      {
+         if (it->second.size() > 1)
+         {
+            string sMsg = it->second.at(0) + " (planned " + std::to_string(it->second.size()) + " times)";
+            vInternalConflicts.push_back(sMsg);
+         }
+      }
+
+      if (!vInternalConflicts.empty() || !vExisting.empty())
+      {
+         string strErrorMsg = " Error - output file conflict(s) detected before search.\n";
+         if (!vInternalConflicts.empty())
+         {
+            strErrorMsg += "  Internal planned conflicts:\n";
+            for (size_t i = 0; i < vInternalConflicts.size(); ++i)
+               strErrorMsg += "   - " + vInternalConflicts.at(i) + "\n";
+         }
+         if (!vExisting.empty())
+         {
+            strErrorMsg += "  Existing files on disk:\n";
+            for (size_t i = 0; i < vExisting.size(); ++i)
+               strErrorMsg += "   - " + vExisting.at(i) + "\n";
+         }
+         logerr(strErrorMsg);
+         exit(1);
+      }
+   }
+
+   int iEqualIL = 1;
+   pSearchMgr->GetParamValue("equal_I_and_L", iEqualIL);
+   bool bTreatSameIL = (iEqualIL != 0);
+
    vector<double> vNovelMasses;
    string sNovelScoringDatabase;
+   vector<NovelPeptideRecord> vNovelRecords;
 
    if (novelOpts.HasNovelMode())
    {
@@ -859,6 +1284,18 @@ void ProcessCmdLine(int argc,
          logerr(strErrorMsg);
          exit(1);
       }
+
+      auto AppendUniqueProtein = [](vector<string>& vProteinIds, const string& sProteinId)
+      {
+         if (sProteinId.empty())
+            return;
+         for (size_t i = 0; i < vProteinIds.size(); ++i)
+         {
+            if (vProteinIds.at(i) == sProteinId)
+               return;
+         }
+         vProteinIds.push_back(sProteinId);
+      };
 
       auto BuildNoVarModOverrides = []() -> map<string, string>
       {
@@ -874,234 +1311,383 @@ void ProcessCmdLine(int argc,
          return mOverrides;
       };
 
-      int iNoCutEnzyme = -1;
+      if (novelOpts.HasNovelInputOptions())
       {
-         string sErrorMsg;
-         if (!FindNoCutEnzymeNumber(sParamsFile, iNoCutEnzyme, sErrorMsg))
+         string sTmpNoVarModParams;
          {
-            logerr(sErrorMsg);
-            exit(1);
-         }
-      }
-
-      auto BuildNoCutOverrides = [&](bool bDisableVarMods) -> map<string, string>
-      {
-         map<string, string> mOverrides;
-         mOverrides["search_enzyme_number"] = std::to_string(iNoCutEnzyme);
-         mOverrides["search_enzyme2_number"] = "0";
-         mOverrides["allowed_missed_cleavage"] = "0";
-         mOverrides["num_enzyme_termini"] = "2";
-         if (bDisableVarMods)
-         {
-            map<string, string> mNoVarMods = BuildNoVarModOverrides();
-            mOverrides.insert(mNoVarMods.begin(), mNoVarMods.end());
-         }
-         return mOverrides;
-      };
-
-      string sTmpNoVarModParams;
-      {
-         string sErrorMsg;
-         map<string, string> mNoVarOverrides = BuildNoVarModOverrides();
-         if (!BuildTemporaryParamsFile(sParamsFile, mNoVarOverrides, sTmpNoVarModParams, sErrorMsg))
-         {
-            logerr(sErrorMsg);
-            exit(1);
-         }
-         vTempArtifacts.push_back(sTmpNoVarModParams);
-      }
-
-      set<string> setKnownPeptides;
-      for (size_t iDb = 0; iDb < vKnownDatabases.size(); ++iDb)
-      {
-         const string& sDb = vKnownDatabases.at(iDb);
-         vector<PeptideMassEntry> vEntries;
-         string sErrorMsg;
-
-         if (IsIdxDatabasePath(sDb))
-         {
-            int iType = 0;
-            string sProbeError;
-            if (!CometPlusProbeIdxType(sDb, iType, sProbeError))
+            string sErrorMsg;
+            map<string, string> mNoVarOverrides = BuildNoVarModOverrides();
+            if (!BuildTemporaryParamsFile(sParamsFile, mNoVarOverrides, sTmpNoVarModParams, sErrorMsg))
             {
-               logerr(sProbeError);
+               logerr(sErrorMsg);
                exit(1);
             }
+            vTempArtifacts.push_back(sTmpNoVarModParams);
+         }
 
-            bool bOk = false;
-            if (iType == 1)
-               bOk = ParseFragmentIdxEntries(sDb, vEntries, sErrorMsg);
-            else if (iType == 2)
-               bOk = ParsePeptideIdxEntries(sDb, vEntries, sErrorMsg);
+         set<string> setKnownPeptides;
+         {
+            auto tStageStart = std::chrono::steady_clock::now();
+            vector<PeptideMassEntry> vKnownEntries;
+            string sErrorMsg;
+
+            if (bKnownAllIdx)
+            {
+               for (size_t iDb = 0; iDb < vKnownDatabases.size(); ++iDb)
+               {
+                  const string& sDb = vKnownDatabases.at(iDb);
+
+                  int iType = 0;
+                  string sProbeError;
+                  if (!CometPlusProbeIdxType(sDb, iType, sProbeError))
+                  {
+                     logerr(sProbeError);
+                     exit(1);
+                  }
+
+                  vector<PeptideMassEntry> vEntries;
+                  bool bOk = false;
+                  if (iType == 1)
+                     bOk = ParseFragmentIdxEntries(sDb, vEntries, sErrorMsg);
+                  else if (iType == 2)
+                     bOk = ParsePeptideIdxEntries(sDb, vEntries, false, sErrorMsg);
+                  else
+                  {
+                     sErrorMsg = " Error - unknown .idx type encountered while parsing known database.\n";
+                     bOk = false;
+                  }
+
+                  if (!bOk)
+                  {
+                     logerr(sErrorMsg);
+                     exit(1);
+                  }
+
+                  vKnownEntries.insert(vKnownEntries.end(), vEntries.begin(), vEntries.end());
+               }
+            }
             else
             {
-               sErrorMsg = " Error - unknown .idx type encountered while parsing known database.\n";
-               bOk = false;
+               string sTmpKnownFasta;
+               if (!BuildMergedFasta(vKnownDatabases, sTmpKnownFasta, sErrorMsg))
+               {
+                  logerr(sErrorMsg);
+                  exit(1);
+               }
+               vTempArtifacts.push_back(sTmpKnownFasta);
+
+               if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath,
+                                               sTmpNoVarModParams,
+                                               sTmpKnownFasta,
+                                               false,
+                                               iThreadOverride,
+                                               sErrorMsg))
+               {
+                  logerr(sErrorMsg);
+                  exit(1);
+               }
+
+               string sTmpKnownIdx = sTmpKnownFasta + ".idx";
+               vTempArtifacts.push_back(sTmpKnownIdx);
+               if (!ParsePeptideIdxEntries(sTmpKnownIdx, vKnownEntries, false, sErrorMsg))
+               {
+                  logerr(sErrorMsg);
+                  exit(1);
+               }
             }
 
-            if (!bOk)
+            for (size_t i = 0; i < vKnownEntries.size(); ++i)
             {
-               logerr(sErrorMsg);
-               exit(1);
+               string sKey = NormalizePeptideForCompare(vKnownEntries.at(i).sPeptide, bTreatSameIL);
+               if (!sKey.empty())
+                  setKnownPeptides.insert(sKey);
             }
+
+            LogStageTiming("known peptide extraction", tStageStart, tProgramStart);
          }
-         else
+
+         struct NovelCandidateAggregate
          {
-            string sTmpFasta;
-            if (!BuildMergedFasta(vector<string>(1, sDb), sTmpFasta, sErrorMsg))
-            {
-               logerr(sErrorMsg);
-               exit(1);
-            }
-            vTempArtifacts.push_back(sTmpFasta);
+            string sRepresentativePeptide;
+            vector<string> vProteinIds;
+         };
 
-            if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sTmpNoVarModParams, sTmpFasta, false, sErrorMsg))
+         unordered_map<string, NovelCandidateAggregate> mNovelCandidates;
+         {
+            auto tStageStart = std::chrono::steady_clock::now();
+            if (!novelOpts.sNovelProteinPath.empty())
             {
-               logerr(sErrorMsg);
-               exit(1);
+               string sErrorMsg;
+               string sTmpNovelProtein;
+               if (!BuildMergedFasta(vector<string>(1, novelOpts.sNovelProteinPath), sTmpNovelProtein, sErrorMsg))
+               {
+                  logerr(sErrorMsg);
+                  exit(1);
+               }
+               vTempArtifacts.push_back(sTmpNovelProtein);
+
+               if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath,
+                                               sTmpNoVarModParams,
+                                               sTmpNovelProtein,
+                                               false,
+                                               iThreadOverride,
+                                               sErrorMsg))
+               {
+                  logerr(sErrorMsg);
+                  exit(1);
+               }
+               string sTmpNovelProteinIdx = sTmpNovelProtein + ".idx";
+               vTempArtifacts.push_back(sTmpNovelProteinIdx);
+
+               vector<PeptideMassEntry> vTmp;
+               if (!ParsePeptideIdxEntries(sTmpNovelProteinIdx, vTmp, true, sErrorMsg))
+               {
+                  logerr(sErrorMsg);
+                  exit(1);
+               }
+
+               for (size_t i = 0; i < vTmp.size(); ++i)
+               {
+                  string sNormPep = NormalizePeptideToken(vTmp.at(i).sPeptide);
+                  string sKey = NormalizePeptideForCompare(sNormPep, bTreatSameIL);
+                  if (sKey.empty())
+                     continue;
+
+                  auto it = mNovelCandidates.find(sKey);
+                  if (it == mNovelCandidates.end())
+                  {
+                     NovelCandidateAggregate agg;
+                     agg.sRepresentativePeptide = sNormPep;
+                     mNovelCandidates[sKey] = agg;
+                     it = mNovelCandidates.find(sKey);
+                  }
+
+                  for (size_t iProt = 0; iProt < vTmp.at(i).vProteinIds.size(); ++iProt)
+                     AppendUniqueProtein(it->second.vProteinIds, vTmp.at(i).vProteinIds.at(iProt));
+               }
             }
 
-            string sTmpIdx = sTmpFasta + ".idx";
-            vTempArtifacts.push_back(sTmpIdx);
-            if (!ParsePeptideIdxEntries(sTmpIdx, vEntries, sErrorMsg))
+            if (!novelOpts.sNovelPeptidePath.empty())
             {
-               logerr(sErrorMsg);
-               exit(1);
+               string sErrorMsg;
+               vector<string> vInputPeptides;
+               if (!ParseNovelPeptideFile(novelOpts.sNovelPeptidePath, vInputPeptides, sErrorMsg))
+               {
+                  logerr(sErrorMsg);
+                  exit(1);
+               }
+
+               if (vInputPeptides.empty())
+               {
+                  string strErrorMsg = " Error - no peptide entries were parsed from --novel_peptide input.\n";
+                  logerr(strErrorMsg);
+                  exit(1);
+               }
+
+               for (size_t i = 0; i < vInputPeptides.size(); ++i)
+               {
+                  string sNormPep = NormalizePeptideToken(vInputPeptides.at(i));
+                  string sKey = NormalizePeptideForCompare(sNormPep, bTreatSameIL);
+                  if (sKey.empty())
+                     continue;
+
+                  auto it = mNovelCandidates.find(sKey);
+                  if (it == mNovelCandidates.end())
+                  {
+                     NovelCandidateAggregate agg;
+                     agg.sRepresentativePeptide = sNormPep;
+                     mNovelCandidates[sKey] = agg;
+                     it = mNovelCandidates.find(sKey);
+                  }
+
+                  AppendUniqueProtein(it->second.vProteinIds, sNormPep);
+               }
             }
+
+            LogStageTiming("novel candidate assembly", tStageStart, tProgramStart);
          }
 
-         for (size_t i = 0; i < vEntries.size(); ++i)
          {
-            string sKey = NormalizePeptideForCompare(vEntries.at(i).sPeptide, bTreatSameIL);
-            if (!sKey.empty())
-               setKnownPeptides.insert(sKey);
+            auto tStageStart = std::chrono::steady_clock::now();
+            int iSubtractedCount = 0;
+            vector<string> vKeys;
+            vKeys.reserve(mNovelCandidates.size());
+            for (auto it = mNovelCandidates.begin(); it != mNovelCandidates.end(); ++it)
+               vKeys.push_back(it->first);
+            std::sort(vKeys.begin(), vKeys.end());
+
+            vNovelRecords.clear();
+            for (size_t i = 0; i < vKeys.size(); ++i)
+            {
+               if (setKnownPeptides.find(vKeys.at(i)) != setKnownPeptides.end())
+               {
+                  iSubtractedCount++;
+                  continue;
+               }
+
+               NovelPeptideRecord rec;
+               rec.sPeptide = mNovelCandidates[vKeys.at(i)].sRepresentativePeptide;
+               rec.vProteinIds = mNovelCandidates[vKeys.at(i)].vProteinIds;
+               vNovelRecords.push_back(rec);
+            }
+
+            std::sort(vNovelRecords.begin(),
+                      vNovelRecords.end(),
+                      [](const NovelPeptideRecord& a, const NovelPeptideRecord& b)
+                      {
+                         return a.sPeptide < b.sPeptide;
+                      });
+
+            for (size_t i = 0; i < vNovelRecords.size(); ++i)
+               vNovelRecords.at(i).sPeptideId = "COMETPLUS_NOVEL_" + std::to_string(i + 1);
+
+            char szLogBuf[512];
+            snprintf(szLogBuf, sizeof(szLogBuf),
+                     " Novel mode: %zu unique novel peptides parsed, %d removed by known-db subtraction, %zu retained.\n",
+                     mNovelCandidates.size(),
+                     iSubtractedCount,
+                     vNovelRecords.size());
+            logout(szLogBuf);
+
+            LogStageTiming("novel candidate subtraction", tStageStart, tProgramStart);
          }
       }
-
-      struct NovelCandidateAggregate
+      else if (novelOpts.HasInternalNovelInput())
       {
-         string sRepresentativePeptide;
-      };
-
-      unordered_map<string, NovelCandidateAggregate> mNovelCandidates;
-
-      if (!novelOpts.sNovelProteinPath.empty())
-      {
+         auto tStageStart = std::chrono::steady_clock::now();
          string sErrorMsg;
-         string sTmpNovelProtein;
-         if (!BuildMergedFasta(vector<string>(1, novelOpts.sNovelProteinPath), sTmpNovelProtein, sErrorMsg))
-         {
-            logerr(sErrorMsg);
-            exit(1);
-         }
-         vTempArtifacts.push_back(sTmpNovelProtein);
-
-         if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sTmpNoVarModParams, sTmpNovelProtein, false, sErrorMsg))
-         {
-            logerr(sErrorMsg);
-            exit(1);
-         }
-         string sTmpNovelProteinIdx = sTmpNovelProtein + ".idx";
-         vTempArtifacts.push_back(sTmpNovelProteinIdx);
-
-         vector<PeptideMassEntry> vTmp;
-         if (!ParsePeptideIdxEntries(sTmpNovelProteinIdx, vTmp, sErrorMsg))
+         if (!ParseInternalNovelPeptideFile(novelOpts.sInternalNovelPeptidePath, vNovelRecords, sErrorMsg))
          {
             logerr(sErrorMsg);
             exit(1);
          }
 
-         for (size_t i = 0; i < vTmp.size(); ++i)
-         {
-            string sNormPep = NormalizePeptideToken(vTmp.at(i).sPeptide);
-            string sKey = NormalizePeptideForCompare(sNormPep, bTreatSameIL);
-            if (sKey.empty())
-               continue;
-
-            if (mNovelCandidates.find(sKey) == mNovelCandidates.end())
-            {
-               NovelCandidateAggregate agg;
-               agg.sRepresentativePeptide = sNormPep;
-               mNovelCandidates[sKey] = agg;
-            }
-         }
+         char szLogBuf[512];
+         snprintf(szLogBuf, sizeof(szLogBuf),
+                  " Novel mode: imported %zu internal novel peptide records from \"%s\".\n",
+                  vNovelRecords.size(),
+                  novelOpts.sInternalNovelPeptidePath.c_str());
+         logout(szLogBuf);
+         LogStageTiming("internal novel peptide import", tStageStart, tProgramStart);
       }
 
-      if (!novelOpts.sNovelPeptidePath.empty())
+      if (!sResolvedOutputInternalNovelPath.empty())
       {
-         string sErrorMsg;
-         vector<string> vInputPeptides;
-         if (!ParseNovelPeptideFile(novelOpts.sNovelPeptidePath, vInputPeptides, sErrorMsg))
+         auto tStageStart = std::chrono::steady_clock::now();
+
+         string sOutputDir = GetDirNameLocal(sResolvedOutputInternalNovelPath);
+         if (!sOutputDir.empty())
          {
-            logerr(sErrorMsg);
-            exit(1);
+            string sErrorMsg;
+            if (!EnsureDirectoryExistsRecursive(sOutputDir, sErrorMsg))
+            {
+               logerr(sErrorMsg);
+               exit(1);
+            }
          }
 
-         if (vInputPeptides.empty())
+         std::ofstream outFile(sResolvedOutputInternalNovelPath.c_str(),
+                               std::ios::out | std::ios::trunc);
+         if (!outFile.good())
          {
-            string strErrorMsg = " Error - no peptide entries were parsed from --novel_peptide input.\n";
+            string strErrorMsg = " Error - cannot create internal novel peptide file \"" + sResolvedOutputInternalNovelPath + "\".\n";
             logerr(strErrorMsg);
             exit(1);
          }
 
-         for (size_t i = 0; i < vInputPeptides.size(); ++i)
+         outFile << "peptide\tpeptide_id\tprotein_id\n";
+         int iAutoId = 1;
+         for (size_t i = 0; i < vNovelRecords.size(); ++i)
          {
-            string sNormPep = NormalizePeptideToken(vInputPeptides.at(i));
-            string sKey = NormalizePeptideForCompare(sNormPep, bTreatSameIL);
-            if (sKey.empty())
+            string sPeptide = NormalizePeptideToken(vNovelRecords.at(i).sPeptide);
+            if (sPeptide.empty())
                continue;
 
-            if (mNovelCandidates.find(sKey) == mNovelCandidates.end())
+            string sPeptideId = vNovelRecords.at(i).sPeptideId;
+            if (sPeptideId.empty())
             {
-               NovelCandidateAggregate agg;
-               agg.sRepresentativePeptide = sNormPep;
-               mNovelCandidates[sKey] = agg;
+               sPeptideId = "COMETPLUS_NOVEL_" + std::to_string(iAutoId);
+               iAutoId++;
             }
-         }
-      }
 
-      vector<string> vRemainingNovelPeptides;
-      int iSubtractedCount = 0;
-      for (auto it = mNovelCandidates.begin(); it != mNovelCandidates.end(); ++it)
-      {
-         if (setKnownPeptides.find(it->first) != setKnownPeptides.end())
+            string sProteinIdField;
+            for (size_t j = 0; j < vNovelRecords.at(i).vProteinIds.size(); ++j)
+            {
+               if (j > 0)
+                  sProteinIdField += ";";
+               sProteinIdField += vNovelRecords.at(i).vProteinIds.at(j);
+            }
+
+            outFile << sPeptide << "\t" << sPeptideId << "\t" << sProteinIdField << "\n";
+         }
+
+         outFile.flush();
+         if (!outFile.good())
          {
-            iSubtractedCount++;
-            continue;
+            string strErrorMsg = " Error - failed writing internal novel peptide file \"" + sResolvedOutputInternalNovelPath + "\".\n";
+            logerr(strErrorMsg);
+            exit(1);
          }
 
-         vRemainingNovelPeptides.push_back(it->second.sRepresentativePeptide);
+         char szLogBuf[1024];
+         snprintf(szLogBuf,
+                  sizeof(szLogBuf),
+                  " Saved internal novel peptide file: %s (%zu rows)\n",
+                  sResolvedOutputInternalNovelPath.c_str(),
+                  vNovelRecords.size());
+         logout(szLogBuf);
+         LogStageTiming("internal novel peptide export", tStageStart, tProgramStart);
+
+         if (novelOpts.bStopAfterSavingNovelPeptide)
+         {
+            char szStopBuf[1024];
+            snprintf(szStopBuf,
+                     sizeof(szStopBuf),
+                     " [%s] stop-after-saving-novel-peptide enabled; exiting without spectrum prefilter/search.\n",
+                     GetLocalTimestampString().c_str());
+            logout(szStopBuf);
+
+            for (size_t i = 0; i < vTempArtifacts.size(); ++i)
+            {
+               if (!vTempArtifacts.at(i).empty())
+                  remove(vTempArtifacts.at(i).c_str());
+            }
+            if (!sMergedDatabasePath.empty())
+               remove(sMergedDatabasePath.c_str());
+            exit(0);
+         }
       }
-
-      std::sort(vRemainingNovelPeptides.begin(), vRemainingNovelPeptides.end());
-      vRemainingNovelPeptides.erase(std::unique(vRemainingNovelPeptides.begin(), vRemainingNovelPeptides.end()),
-                                    vRemainingNovelPeptides.end());
-
-      char szLogBuf[512];
-      snprintf(szLogBuf, sizeof(szLogBuf),
-               " Novel mode: %zu unique novel peptides parsed, %d removed by known-db subtraction, %zu retained.\n",
-               mNovelCandidates.size(),
-               iSubtractedCount,
-               vRemainingNovelPeptides.size());
-      logout(szLogBuf);
 
       if (iDecoySearch == 0)
       {
          logout(" Warning - decoy_search=0 in novel mode; novel peptide inputs are treated as target entries unless already encoded as decoy sequences.\n");
       }
 
-      if (!vRemainingNovelPeptides.empty())
+      if (!vNovelRecords.empty())
       {
+         auto tStageStart = std::chrono::steady_clock::now();
          string sNovelFastaPath;
          string sErrorMsg;
-         if (!WritePeptidesToFasta(vRemainingNovelPeptides, "cometplus_novel_scoring", sNovelFastaPath, sErrorMsg))
+         if (!WriteNovelRecordsToFasta(vNovelRecords, "cometplus_novel_scoring", sNovelFastaPath, sErrorMsg))
          {
             logerr(sErrorMsg);
             exit(1);
          }
          vTempArtifacts.push_back(sNovelFastaPath);
 
-         map<string, string> mNoCutOverrides = BuildNoCutOverrides(false);
+         int iNoCutEnzyme = -1;
+         if (!FindNoCutEnzymeNumber(sParamsFile, iNoCutEnzyme, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+
+         map<string, string> mNoCutOverrides;
+         mNoCutOverrides["search_enzyme_number"] = std::to_string(iNoCutEnzyme);
+         mNoCutOverrides["search_enzyme2_number"] = "0";
+         mNoCutOverrides["allowed_missed_cleavage"] = "0";
+         mNoCutOverrides["num_enzyme_termini"] = "2";
+
          string sTmpNoCutParams;
          if (!BuildTemporaryParamsFile(sParamsFile, mNoCutOverrides, sTmpNoCutParams, sErrorMsg))
          {
@@ -1110,7 +1696,12 @@ void ProcessCmdLine(int argc,
          }
          vTempArtifacts.push_back(sTmpNoCutParams);
 
-         if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sTmpNoCutParams, sNovelFastaPath, false, sErrorMsg))
+         if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath,
+                                         sTmpNoCutParams,
+                                         sNovelFastaPath,
+                                         false,
+                                         iThreadOverride,
+                                         sErrorMsg))
          {
             logerr(sErrorMsg);
             exit(1);
@@ -1120,7 +1711,7 @@ void ProcessCmdLine(int argc,
          vTempArtifacts.push_back(sTmpNovelMassIdx);
 
          vector<PeptideMassEntry> vNovelMassEntries;
-         if (!ParsePeptideIdxEntries(sTmpNovelMassIdx, vNovelMassEntries, sErrorMsg))
+         if (!ParsePeptideIdxEntries(sTmpNovelMassIdx, vNovelMassEntries, false, sErrorMsg))
          {
             logerr(sErrorMsg);
             exit(1);
@@ -1137,7 +1728,12 @@ void ProcessCmdLine(int argc,
          if (bKnownAllIdx)
          {
             bool bFragment = (iKnownIdxType == 1);
-            if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath, sParamsFile, sNovelFastaPath, bFragment, sErrorMsg))
+            if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath,
+                                            sParamsFile,
+                                            sNovelFastaPath,
+                                            bFragment,
+                                            iThreadOverride,
+                                            sErrorMsg))
             {
                logerr(sErrorMsg);
                exit(1);
@@ -1150,6 +1746,8 @@ void ProcessCmdLine(int argc,
          {
             sNovelScoringDatabase = sNovelFastaPath;
          }
+
+         LogStageTiming("novel mass calculation", tStageStart, tProgramStart);
       }
       else
       {
@@ -1173,28 +1771,23 @@ void ProcessCmdLine(int argc,
          vTempArtifacts.push_back(sMergedDatabasePath);
    }
 
-   vector<InputFileInfo*> vParsedInputs;
-   for (size_t i = 0; i < vInputArgs.size(); ++i)
-   {
-      InputFileInfo* pInputFileInfo = new InputFileInfo();
-      std::vector<char> vInput(vInputArgs.at(i).begin(), vInputArgs.at(i).end());
-      vInput.push_back('\0');
-
-      if (!ParseCmdLine(vInput.data(), pInputFileInfo, pSearchMgr))
-      {
-         string strErrorMsg = "\n Comet version " + g_sCometVersion + "\n\n"
-            + " Error - input file \"" + std::string(pInputFileInfo->szFileName) + "\" not found.\n";
-         logerr(strErrorMsg);
-         pvInputFiles.clear();
-         exit(1);
-      }
-      vParsedInputs.push_back(pInputFileInfo);
-   }
+   CometPlusSetNovelOutputOnly(novelOpts.HasNovelMode());
 
    bool bNeedScanPrefilter = novelOpts.HasNovelMode() || novelOpts.HasExplicitScanFilter();
    if (!bNeedScanPrefilter)
    {
       pvInputFiles = vParsedInputs;
+
+      char szSummary[1024];
+      snprintf(szSummary,
+               sizeof(szSummary),
+               " [%s] search launch summary: %zu input files, novel_mode=%d, explicit_scan_filter=%d, novel_masses=%zu\n",
+               GetLocalTimestampString().c_str(),
+               pvInputFiles.size(),
+               novelOpts.HasNovelMode() ? 1 : 0,
+               novelOpts.HasExplicitScanFilter() ? 1 : 0,
+               vNovelMasses.size());
+      logout(szSummary);
       return;
    }
 
@@ -1230,12 +1823,14 @@ void ProcessCmdLine(int argc,
       }
    }
 
+   auto tPrefilterStart = std::chrono::steady_clock::now();
    for (size_t i = 0; i < vParsedInputs.size(); ++i)
    {
       InputFileInfo* pInputFileInfo = vParsedInputs.at(i);
       string sOriginalPath = pInputFileInfo->szFileName;
-      string sOutputBaseName = ComputeInputBaseName(sOriginalPath);
+      string sOutputBaseName = pInputFileInfo->szBaseName;
 
+      auto tInputPrefilterStart = std::chrono::steady_clock::now();
       string sTempMgfPath;
       int iNumScansKept = 0;
       if (!FilterInputFileToTempMgf(*pInputFileInfo,
@@ -1260,14 +1855,31 @@ void ProcessCmdLine(int argc,
       pInputFileInfo->szBaseName[SIZE_FILE - 1] = '\0';
 
       char szLogBuf[512];
+      double dInputSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - tInputPrefilterStart).count() / 1000.0;
       snprintf(szLogBuf, sizeof(szLogBuf),
-               " Scan prefilter: \"%s\" -> %d scans retained.\n",
+               " [%s] scan prefilter: \"%s\" -> %d scans retained (%.3f sec)\n",
+               GetLocalTimestampString().c_str(),
                sOriginalPath.c_str(),
-               iNumScansKept);
+               iNumScansKept,
+               dInputSeconds);
       logout(szLogBuf);
 
       pvInputFiles.push_back(pInputFileInfo);
    }
+
+   LogStageTiming("scan prefilter (total)", tPrefilterStart, tProgramStart);
+
+   char szSummary[1024];
+   snprintf(szSummary,
+            sizeof(szSummary),
+            " [%s] search launch summary: %zu input files, novel_mode=%d, explicit_scan_filter=%d, novel_masses=%zu\n",
+            GetLocalTimestampString().c_str(),
+            pvInputFiles.size(),
+            novelOpts.HasNovelMode() ? 1 : 0,
+            novelOpts.HasExplicitScanFilter() ? 1 : 0,
+            vNovelMasses.size());
+   logout(szSummary);
 } // ProcessCmdLine
 
 

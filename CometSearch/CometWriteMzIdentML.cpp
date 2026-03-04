@@ -40,6 +40,7 @@ CometWriteMzIdentML::~CometWriteMzIdentML()
 
 void CometWriteMzIdentML::WriteMzIdentMLTmp(FILE *fpout,
                                             FILE *fpoutd,
+                                            FILE *fpdb,
                                             int iBatchNum)
 {
    int i;
@@ -48,14 +49,26 @@ void CometWriteMzIdentML::WriteMzIdentMLTmp(FILE *fpout,
    if (g_staticParams.options.iDecoySearch == 2)
    {
       for (i=0; i<(int)g_pvQuery.size(); ++i)
+      {
+         if (!CometMassSpecUtils::QueryHasNovelTargetResult(fpdb, i))
+            continue;
          PrintTmpPSM(i, 1, iBatchNum, fpout);
+      }
       for (i=0; i<(int)g_pvQuery.size(); ++i)
+      {
+         if (!CometMassSpecUtils::QueryHasNovelTargetResult(fpdb, i))
+            continue;
          PrintTmpPSM(i, 2, iBatchNum, fpoutd);
+      }
    }
    else
    {
       for (i=0; i<(int)g_pvQuery.size(); ++i)
+      {
+         if (!CometMassSpecUtils::QueryHasNovelTargetResult(fpdb, i))
+            continue;
          PrintTmpPSM(i, 0, iBatchNum, fpout);
+      }
    }
 
    fflush(fpout);

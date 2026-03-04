@@ -1,12 +1,16 @@
 # CometPlus Novel Protein/Peptide Design (Detailed)
 
 ## 1. Scope and Added Options
-CometPlus adds four options in this design scope:
+CometPlus adds eight options in this design scope:
 
 1. `--novel_protein <file>`
 2. `--novel_peptide <file>`
 3. `--scan <file>`
 4. `--scan_numbers <list>`
+5. `--output-folder <dir>`
+6. `--output_internal_novel_peptide <file_internal_novel_peptide>`
+7. `--internal_novel_peptide <file_internal_novel_peptide>`
+8. `--stop-after-saving-novel-peptide`
 
 Goal:
 
@@ -22,6 +26,10 @@ Goal:
 | `--novel_peptide` | FASTA or tokenized text | auto-detect FASTA by `>` line; otherwise token parser | No |
 | `--scan` | text file of scan integers | delimiters: comma or any whitespace | No |
 | `--scan_numbers` | inline scan list | same integer parser as `--scan` | No |
+| `--output-folder` | directory path | output root; created recursively if missing | Yes |
+| `--output_internal_novel_peptide` | output file path | write internal TSV; no-dir path resolves to output-folder | No |
+| `--internal_novel_peptide` | TSV file path | load internal TSV and skip subtraction | Yes |
+| `--stop-after-saving-novel-peptide` | flag | requires `--output_internal_novel_peptide` | No |
 
 Novel option combination:
 
@@ -30,11 +38,16 @@ Novel option combination:
 
 Hard constraints:
 
-1. Any of `--novel_*` / `--scan*` requires at least one spectrum input file.
+1. Any of `--novel_*` / `--scan*` requires at least one spectrum input file, except stop-after mode (`--stop-after-saving-novel-peptide`).
 2. `--novel_*` and `--scan*` are rejected with `-i` or `-j`.
 3. Novel mode requires known DB from `--database` or `database_name` in params.
 4. Known DB inputs must be all FASTA or all `.idx`.
 5. If known DB is `.idx`, all `.idx` must be same index type.
+6. `--output_internal_novel_peptide` requires at least one of `--novel_protein` / `--novel_peptide`.
+7. `--internal_novel_peptide` is mutually exclusive with `--novel_protein` and `--novel_peptide`.
+8. `--stop-after-saving-novel-peptide` requires `--output_internal_novel_peptide`.
+9. If `--name` and `--output-folder` are both set, `--name` must not contain path separators.
+10. Spectrum input can be omitted only in stop-after mode.
 
 ## 3. `--novel_peptide`: FASTA vs Tokenized Text
 
@@ -339,3 +352,114 @@ cometplus \
 ```
 
 The two sources are unioned first, then intersected by range constraints and optional novel mass plausibility.
+
+## 11. Output Routing And Conflict Precheck
+
+### 11.1 `--output-folder` routing
+1. Default output folder is current directory (`.`).
+2. CometPlus rewrites each input basename to `<output-folder>/<input-stem>`.
+3. If `--name` is used (single-input mode), basename is `<output-folder>/<name>`.
+4. Result: output files are no longer written to input spectrum directories.
+
+### 11.2 Planned output conflict detection
+Before search starts, CometPlus computes all planned outputs for each input:
+
+1. `sqt`
+2. `txt` (with configured text extension)
+3. `pep.xml`
+4. `mzid`
+5. `pin`
+6. decoy-side files when `decoy_search=2`
+7. internal TSV target when `--output_internal_novel_peptide` is set
+
+Then two checks run:
+
+1. Internal collisions inside this invocation (same path planned multiple times).
+2. Existing files already on disk.
+
+Any collision prints a conflict list and exits before search/prefilter.
+
+## 12. Internal Novel Peptide TSV (Export And Reuse)
+
+### 12.1 Export: `--output_internal_novel_peptide`
+This file stores retained novel peptides after known-db subtraction.
+
+Format is fixed TSV with header:
+
+```text
+peptide	peptide_id	protein_id
+```
+
+Column semantics:
+
+1. `peptide`: normalized peptide amino-acid sequence.
+2. `peptide_id`: `COMETPLUS_NOVEL_<n>` for newly generated records.
+3. `protein_id`:
+   - novel_protein source: source protein IDs, semicolon-separated.
+   - novel_peptide source: normalized peptide sequence itself.
+   - mixed source: merged semicolon list.
+
+Path behavior:
+
+1. If path includes directory, missing directories are created recursively.
+2. If path has no directory component, file is written under `--output-folder`.
+
+### 12.2 Stop-after mode
+`--stop-after-saving-novel-peptide`:
+
+1. Requires `--output_internal_novel_peptide`.
+2. Exits with code `0` right after TSV is written.
+3. Skips subsequent spectrum prefilter and search stages.
+4. Can be used without spectrum inputs.
+
+### 12.3 Reuse: `--internal_novel_peptide`
+1. Input must be the TSV format produced above.
+2. Required columns: `peptide`, `peptide_id`, `protein_id`.
+3. Imported records preserve `peptide_id` values from file (no renumbering).
+4. This mode is mutually exclusive with `--novel_protein` / `--novel_peptide`.
+5. Known-vs-novel subtraction is skipped.
+6. Workflow continues from novel mass collection + prefilter + search.
+
+## 13. Novel-Only Spectrum Output Filtering
+
+In novel mode, all output writers apply query-level gate:
+
+1. `txt`
+2. `sqt`
+3. `pepXML`
+4. `mzid`
+5. `pin`
+
+Rule:
+
+1. A spectrum is retained only if at least one target-side printable PSM maps to `COMETPLUS_NOVEL_...`.
+2. Otherwise the whole spectrum is omitted from all outputs.
+3. With `decoy_search=2`, once a spectrum passes target-side gate, target and decoy sides are both kept for that spectrum.
+
+Non-novel mode behavior is unchanged.
+
+## 14. Temporary File Directory Policy
+
+To avoid system tmp usage:
+
+1. CometPlus temporary artifacts are created under `--output-folder` root:
+   - merged FASTA
+   - temporary params
+   - temporary index files
+   - filtered MGF
+   - novel scoring FASTA
+2. CometSearch-side temporary inflated files (`*.mzML.gz`, etc.) also land under output basename directory, which now points to `--output-folder`.
+
+## 15. Runtime Logging And Performance Interpretation
+
+CometPlus logs timestamped stage messages with elapsed seconds for major steps:
+
+1. known peptide extraction
+2. novel candidate assembly
+3. subtraction
+4. internal TSV import/export
+5. novel mass calculation
+6. per-input scan prefilter and total prefilter time
+7. search launch summary
+
+Observed thread behavior (`--thread 1` vs `--thread 20`) can be close in novel workflows because large portions of runtime are outside main search threads (index generation subprocesses, I/O, single-thread prefilter). Thread override is now forwarded to temporary index-generation subprocesses to reduce this gap.

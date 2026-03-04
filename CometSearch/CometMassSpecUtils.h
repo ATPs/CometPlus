@@ -56,6 +56,8 @@ public:
                                     unsigned int *iNumTotProteins,   // matched protein count
                                     vector<string>& vProteinTargets,  // the target protein names
                                     vector<string>& vProteinDecoys);  // the decoy protein names if applicable
+   static bool QueryHasNovelTargetResult(FILE *fpdb,
+                                         int iWhichQuery);
 
    static string GetField(std::string *s,
                           unsigned int n,

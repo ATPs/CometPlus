@@ -26,6 +26,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 
 #ifndef _WIN32
@@ -37,57 +38,136 @@
 using namespace CometInterfaces;
 
 extern comet_fileoffset_t clSizeCometFileOffset;
+static string g_sCometPlusTempDir = ".";
 
 bool IsIdxDatabasePath(const string& sPath)
 {
    return (sPath.length() >= 4 && !STRCMP_IGNORE_CASE(sPath.c_str() + sPath.length() - 4, ".idx"));
 }
 
+static bool IsPathSeparator(char c)
+{
+   return c == '/' || c == '\\';
+}
+
+static bool IsAbsolutePathLocal(const string& sPath)
+{
+   if (sPath.empty())
+      return false;
+
+   if (IsPathSeparator(sPath[0]))
+      return true;
+
+#ifdef _WIN32
+   if (sPath.length() >= 2
+         && isalpha((unsigned char)sPath[0])
+         && sPath[1] == ':')
+      return true;
+#endif
+
+   return false;
+}
+
+static string JoinPathLocal(const string& sDir, const string& sName)
+{
+   if (sDir.empty() || sDir == ".")
+      return sName;
+   if (sName.empty())
+      return sDir;
+   if (IsAbsolutePathLocal(sName))
+      return sName;
+   if (IsPathSeparator(sDir[sDir.length() - 1]))
+      return sDir + sName;
+#ifdef _WIN32
+   return sDir + "\\" + sName;
+#else
+   return sDir + "/" + sName;
+#endif
+}
+
+void SetCometPlusTempDirectory(const string& sTempDir)
+{
+   if (sTempDir.empty())
+      g_sCometPlusTempDir = ".";
+   else
+      g_sCometPlusTempDir = sTempDir;
+}
+
+bool EnsureDirectoryExistsRecursive(const string& sDirPath,
+                                    string& sErrorMsg)
+{
+   sErrorMsg.clear();
+
+   if (sDirPath.empty() || sDirPath == ".")
+      return true;
+
+   string sNorm = sDirPath;
+   for (size_t i = 0; i < sNorm.length(); ++i)
+   {
+      if (sNorm[i] == '\\')
+         sNorm[i] = '/';
+   }
+
+   string sCurrent;
+   size_t iPos = 0;
+#ifdef _WIN32
+   if (sNorm.length() >= 2 && isalpha((unsigned char)sNorm[0]) && sNorm[1] == ':')
+   {
+      sCurrent = sNorm.substr(0, 2);
+      iPos = 2;
+   }
+#endif
+   if (iPos < sNorm.length() && sNorm[iPos] == '/')
+   {
+      sCurrent += "/";
+      ++iPos;
+   }
+
+   while (iPos <= sNorm.length())
+   {
+      size_t iNext = sNorm.find('/', iPos);
+      string sPart = (iNext == string::npos) ? sNorm.substr(iPos) : sNorm.substr(iPos, iNext - iPos);
+      if (!sPart.empty() && sPart != ".")
+      {
+         if (!sCurrent.empty() && sCurrent[sCurrent.length() - 1] != '/')
+            sCurrent += "/";
+         sCurrent += sPart;
+
+#ifdef _WIN32
+         if (_mkdir(sCurrent.c_str()) != 0 && errno != EEXIST)
+#else
+         if (mkdir(sCurrent.c_str(), 0775) != 0 && errno != EEXIST)
+#endif
+         {
+            struct stat st;
+            if (stat(sCurrent.c_str(), &st) != 0 || !(st.st_mode & S_IFDIR))
+            {
+               sErrorMsg = " Error - cannot create directory \"" + sCurrent + "\".\n";
+               return false;
+            }
+         }
+      }
+
+      if (iNext == string::npos)
+         break;
+      iPos = iNext + 1;
+   }
+
+   return true;
+}
+
 
 bool BuildMergedFasta(const vector<string>& vDatabases, string& sMergedDatabase, string& sErrorMsg)
 {
-#ifdef _WIN32
-   char szTmpPath[MAX_PATH];
-   if (GetTempPathA(MAX_PATH, szTmpPath) == 0)
-   {
-      sErrorMsg = " Error - cannot determine temporary directory for merged FASTA.\n";
+   if (!CreateTempPath("cometplus_db", ".fasta", sMergedDatabase, sErrorMsg))
       return false;
-   }
 
-   char szTmpFile[MAX_PATH];
-   if (GetTempFileNameA(szTmpPath, "cpx", 0, szTmpFile) == 0)
-   {
-      sErrorMsg = " Error - cannot create temporary file for merged FASTA.\n";
-      return false;
-   }
-
-   FILE* fpOut = fopen(szTmpFile, "wb");
+   FILE* fpOut = fopen(sMergedDatabase.c_str(), "wb");
    if (fpOut == NULL)
    {
-      sErrorMsg = " Error - cannot open temporary merged FASTA file \"" + string(szTmpFile) + "\".\n";
+      sErrorMsg = " Error - cannot open temporary merged FASTA file \"" + sMergedDatabase + "\".\n";
       return false;
    }
-
-   sMergedDatabase = szTmpFile;
-#else
-   char szTemplate[] = "/tmp/cometplus_db_XXXXXX";
-   int iFd = mkstemp(szTemplate);
-   if (iFd == -1)
-   {
-      sErrorMsg = " Error - cannot create temporary merged FASTA file.\n";
-      return false;
-   }
-
-   FILE* fpOut = fdopen(iFd, "wb");
-   if (fpOut == NULL)
-   {
-      close(iFd);
-      sErrorMsg = " Error - cannot open temporary merged FASTA file for writing.\n";
-      return false;
-   }
-
-   sMergedDatabase = szTemplate;
-#endif
 
    const size_t iBufSize = 1 << 20;
    vector<char> vBuf(iBufSize);
@@ -241,13 +321,14 @@ bool CreateTempPath(const string& sPrefix,
                     string& sOutPath,
                     string& sErrorMsg)
 {
+   string sTempRoot = g_sCometPlusTempDir.empty() ? "." : g_sCometPlusTempDir;
+   if (!EnsureDirectoryExistsRecursive(sTempRoot, sErrorMsg))
+      return false;
+
 #ifdef _WIN32
    char szTmpPath[MAX_PATH];
-   if (GetTempPathA(MAX_PATH, szTmpPath) == 0)
-   {
-      sErrorMsg = " Error - cannot determine temporary directory.\n";
-      return false;
-   }
+   strncpy(szTmpPath, sTempRoot.c_str(), MAX_PATH - 1);
+   szTmpPath[MAX_PATH - 1] = '\0';
 
    char szTmpFile[MAX_PATH];
    if (GetTempFileNameA(szTmpPath, "cpx", 0, szTmpFile) == 0)
@@ -280,7 +361,7 @@ bool CreateTempPath(const string& sPrefix,
    if (sCleanPrefix.empty())
       sCleanPrefix = "cometplus";
 
-   string sTemplate = "/tmp/" + sCleanPrefix + "_XXXXXX";
+   string sTemplate = JoinPathLocal(sTempRoot, sCleanPrefix + "_XXXXXX");
    vector<char> vTemplate(sTemplate.begin(), sTemplate.end());
    vTemplate.push_back('\0');
 
@@ -492,6 +573,143 @@ bool ParseNovelPeptideFile(const string& sPath,
    return true;
 }
 
+static void SplitTabLine(const string& sLine, vector<string>& vFields)
+{
+   vFields.clear();
+   size_t iStart = 0;
+   while (iStart <= sLine.length())
+   {
+      size_t iPos = sLine.find('\t', iStart);
+      if (iPos == string::npos)
+      {
+         vFields.push_back(sLine.substr(iStart));
+         break;
+      }
+
+      vFields.push_back(sLine.substr(iStart, iPos - iStart));
+      iStart = iPos + 1;
+   }
+}
+
+bool ParseInternalNovelPeptideFile(const string& sPath,
+                                   vector<NovelPeptideRecord>& vRecords,
+                                   string& sErrorMsg)
+{
+   vRecords.clear();
+
+   std::ifstream inFile(sPath.c_str(), std::ios::in | std::ios::binary);
+   if (!inFile.good())
+   {
+      sErrorMsg = " Error - cannot read internal novel peptide file \"" + sPath + "\".\n";
+      return false;
+   }
+
+   string sHeader;
+   if (!std::getline(inFile, sHeader))
+   {
+      sErrorMsg = " Error - internal novel peptide file is empty: \"" + sPath + "\".\n";
+      return false;
+   }
+
+   vector<string> vHeaderFields;
+   SplitTabLine(sHeader, vHeaderFields);
+
+   int iPepCol = -1;
+   int iPepIdCol = -1;
+   int iProtIdCol = -1;
+   for (size_t i = 0; i < vHeaderFields.size(); ++i)
+   {
+      string sCol = TrimStringLocal(vHeaderFields[i]);
+      if (sCol == "peptide")
+         iPepCol = (int)i;
+      else if (sCol == "peptide_id")
+         iPepIdCol = (int)i;
+      else if (sCol == "protein_id")
+         iProtIdCol = (int)i;
+   }
+
+   if (iPepCol < 0 || iPepIdCol < 0 || iProtIdCol < 0)
+   {
+      sErrorMsg = " Error - internal novel peptide file must contain header columns: peptide, peptide_id, protein_id.\n";
+      return false;
+   }
+
+   unordered_map<string, size_t> mPepToIndex;
+   string sLine;
+   int iLineNumber = 1;
+   while (std::getline(inFile, sLine))
+   {
+      ++iLineNumber;
+      if (sLine.empty())
+         continue;
+
+      vector<string> vFields;
+      SplitTabLine(sLine, vFields);
+      int iNeeded = std::max(iPepCol, std::max(iPepIdCol, iProtIdCol));
+      if ((int)vFields.size() <= iNeeded)
+      {
+         sErrorMsg = " Error - malformed internal novel peptide line " + std::to_string(iLineNumber) + ".\n";
+         return false;
+      }
+
+      string sPeptide = NormalizePeptideToken(TrimStringLocal(vFields[iPepCol]));
+      string sPeptideId = TrimStringLocal(vFields[iPepIdCol]);
+      string sProteinField = TrimStringLocal(vFields[iProtIdCol]);
+
+      if (sPeptide.empty() || sPeptideId.empty())
+      {
+         sErrorMsg = " Error - empty peptide or peptide_id at internal novel peptide line " + std::to_string(iLineNumber) + ".\n";
+         return false;
+      }
+
+      vector<string> vProteinIds;
+      unordered_set<string> setProteinSeen;
+      std::stringstream ss(sProteinField);
+      string sOneProtein;
+      while (std::getline(ss, sOneProtein, ';'))
+      {
+         sOneProtein = TrimStringLocal(sOneProtein);
+         if (!sOneProtein.empty() && setProteinSeen.insert(sOneProtein).second)
+            vProteinIds.push_back(sOneProtein);
+      }
+
+      auto itExisting = mPepToIndex.find(sPeptide);
+      if (itExisting == mPepToIndex.end())
+      {
+         NovelPeptideRecord rec;
+         rec.sPeptide = sPeptide;
+         rec.sPeptideId = sPeptideId;
+         rec.vProteinIds = vProteinIds;
+         mPepToIndex[sPeptide] = vRecords.size();
+         vRecords.push_back(rec);
+      }
+      else
+      {
+         NovelPeptideRecord& rec = vRecords.at(itExisting->second);
+         if (rec.sPeptideId != sPeptideId)
+         {
+            sErrorMsg = " Error - peptide \"" + sPeptide + "\" has conflicting peptide_id values in internal novel peptide file.\n";
+            return false;
+         }
+
+         unordered_set<string> setMerge(rec.vProteinIds.begin(), rec.vProteinIds.end());
+         for (size_t i = 0; i < vProteinIds.size(); ++i)
+         {
+            if (setMerge.insert(vProteinIds[i]).second)
+               rec.vProteinIds.push_back(vProteinIds[i]);
+         }
+      }
+   }
+
+   if (vRecords.empty())
+   {
+      sErrorMsg = " Error - no peptide entries were parsed from internal novel peptide input.\n";
+      return false;
+   }
+
+   return true;
+}
+
 bool FindNoCutEnzymeNumber(const string& sParamsFilePath,
                            int& iNoCutEnzyme,
                            string& sErrorMsg)
@@ -646,6 +864,7 @@ bool RunCometForIndexGeneration(const string& sExecutablePath,
                                 const string& sParamsPath,
                                 const string& sDatabasePath,
                                 bool bFragmentIndex,
+                                int iThreadOverride,
                                 string& sErrorMsg)
 {
    if (sExecutablePath.empty())
@@ -658,6 +877,9 @@ bool RunCometForIndexGeneration(const string& sExecutablePath,
       + " --params " + EscapeShellArg(sParamsPath)
       + " --database " + EscapeShellArg(sDatabasePath)
       + " " + (bFragmentIndex ? "-i" : "-j");
+
+   if (iThreadOverride > 0)
+      sCmd += " --thread " + std::to_string(iThreadOverride);
 
    int iReturnCode = system(sCmd.c_str());
 #ifdef _WIN32
@@ -686,6 +908,7 @@ bool RunCometForIndexGeneration(const string& sExecutablePath,
 
 bool ParsePeptideIdxEntries(const string& sIdxPath,
                             vector<PeptideMassEntry>& vEntries,
+                            bool bLoadProteinIds,
                             string& sErrorMsg)
 {
    vEntries.clear();
@@ -706,7 +929,73 @@ bool ParsePeptideIdxEntries(const string& sIdxPath,
       sErrorMsg = " Error - invalid peptide index footer in \"" + sIdxPath + "\".\n";
       return false;
    }
-   (void)lProteinsPos;
+
+   vector<vector<string>> vProteinSets;
+   if (bLoadProteinIds)
+   {
+      if (lProteinsPos <= 0 || comet_fseek(fp, lProteinsPos, SEEK_SET) != 0)
+      {
+         fclose(fp);
+         sErrorMsg = " Error - invalid peptide index protein section in \"" + sIdxPath + "\".\n";
+         return false;
+      }
+
+      size_t tNumSets = 0;
+      if (fread(&tNumSets, clSizeCometFileOffset, 1, fp) != 1)
+      {
+         fclose(fp);
+         sErrorMsg = " Error - failed reading protein-set count from \"" + sIdxPath + "\".\n";
+         return false;
+      }
+
+      vProteinSets.resize(tNumSets);
+      for (size_t iSet = 0; iSet < tNumSets; ++iSet)
+      {
+         size_t tSetSize = 0;
+         if (fread(&tSetSize, clSizeCometFileOffset, 1, fp) != 1)
+         {
+            fclose(fp);
+            sErrorMsg = " Error - failed reading protein-set size from \"" + sIdxPath + "\".\n";
+            return false;
+         }
+
+         vector<comet_fileoffset_t> vOffsets;
+         vOffsets.resize(tSetSize);
+         for (size_t i = 0; i < tSetSize; ++i)
+         {
+            if (fread(&vOffsets[i], clSizeCometFileOffset, 1, fp) != 1)
+            {
+               fclose(fp);
+               sErrorMsg = " Error - failed reading protein offset from \"" + sIdxPath + "\".\n";
+               return false;
+            }
+         }
+
+         unordered_set<string> setSeen;
+         for (size_t i = 0; i < vOffsets.size(); ++i)
+         {
+            if (comet_fseek(fp, vOffsets[i], SEEK_SET) != 0)
+            {
+               fclose(fp);
+               sErrorMsg = " Error - failed seeking protein entry in \"" + sIdxPath + "\".\n";
+               return false;
+            }
+
+            char szProteinName[512];
+            if (fscanf(fp, "%500s", szProteinName) != 1)
+            {
+               fclose(fp);
+               sErrorMsg = " Error - failed reading protein name from \"" + sIdxPath + "\".\n";
+               return false;
+            }
+            szProteinName[500] = '\0';
+
+            string sProteinId = szProteinName;
+            if (!sProteinId.empty() && setSeen.insert(sProteinId).second)
+               vProteinSets[iSet].push_back(sProteinId);
+         }
+      }
+   }
 
    if (lEndOfStruct <= 0)
    {
@@ -836,12 +1125,22 @@ bool ParsePeptideIdxEntries(const string& sIdxPath,
          sErrorMsg = " Error - truncated peptide mass/protein-set entry while parsing \"" + sIdxPath + "\".\n";
          return false;
       }
-      (void)lProteinSetPos;
 
       PeptideMassEntry entry;
       entry.sPeptide = sPeptide;
       entry.dMass = dPepMass;
       entry.bDecoy = false;
+      if (bLoadProteinIds)
+      {
+         if (lProteinSetPos < 0 || (size_t)lProteinSetPos >= vProteinSets.size())
+         {
+            fclose(fp);
+            sErrorMsg = " Error - invalid protein-set reference while parsing \"" + sIdxPath + "\".\n";
+            return false;
+         }
+
+         entry.vProteinIds = vProteinSets[(size_t)lProteinSetPos];
+      }
       vEntries.push_back(entry);
    }
 
@@ -977,6 +1276,60 @@ bool WritePeptidesToFasta(const vector<string>& vPeptides,
       outFile << ">COMETPLUS_NOVEL_" << (iWritten + 1) << "\n";
       outFile << sPep << "\n";
       iWritten++;
+   }
+
+   outFile.flush();
+   if (!outFile.good())
+   {
+      sErrorMsg = " Error - failed writing temporary FASTA \"" + sOutPath + "\".\n";
+      return false;
+   }
+
+   return true;
+}
+
+bool WriteNovelRecordsToFasta(const vector<NovelPeptideRecord>& vRecords,
+                              const string& sPrefix,
+                              string& sOutPath,
+                              string& sErrorMsg)
+{
+   if (!CreateTempPath(sPrefix, ".fasta", sOutPath, sErrorMsg))
+      return false;
+
+   std::ofstream outFile(sOutPath.c_str(), std::ios::out | std::ios::trunc);
+   if (!outFile.good())
+   {
+      sErrorMsg = " Error - cannot create temporary FASTA \"" + sOutPath + "\".\n";
+      return false;
+   }
+
+   unordered_set<string> setSeenPeptides;
+   unordered_set<string> setSeenIds;
+   int iAutoId = 1;
+
+   for (size_t i = 0; i < vRecords.size(); ++i)
+   {
+      string sPep = NormalizePeptideToken(vRecords.at(i).sPeptide);
+      if (sPep.empty())
+         continue;
+      if (!setSeenPeptides.insert(sPep).second)
+         continue;
+
+      string sPepId = TrimStringLocal(vRecords.at(i).sPeptideId);
+      if (sPepId.empty())
+      {
+         sPepId = "COMETPLUS_NOVEL_" + std::to_string(iAutoId);
+         iAutoId++;
+      }
+
+      if (!setSeenIds.insert(sPepId).second)
+      {
+         sErrorMsg = " Error - duplicate peptide_id encountered while building novel scoring FASTA: \"" + sPepId + "\".\n";
+         return false;
+      }
+
+      outFile << ">" << sPepId << "\n";
+      outFile << sPep << "\n";
    }
 
    outFile.flush();

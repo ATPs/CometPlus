@@ -377,6 +377,54 @@ void CometMassSpecUtils::GetProteinNameString(FILE *fpdb,
    }
 }
 
+bool CometMassSpecUtils::QueryHasNovelTargetResult(FILE *fpdb,
+                                                   int iWhichQuery)
+{
+   if (!g_bCometPlusNovelOutputOnly)
+      return true;
+
+   if (iWhichQuery < 0 || iWhichQuery >= (int)g_pvQuery.size())
+      return false;
+
+   if (fpdb == NULL && !g_bCometPlusMultiIdxMode)
+      return false;
+
+   Query* pQuery = g_pvQuery.at(iWhichQuery);
+   if (pQuery->iMatchPeptideCount <= 0)
+      return false;
+
+   int iNumPrintLines = pQuery->iMatchPeptideCount;
+   if (iNumPrintLines > g_staticParams.options.iNumPeptideOutputLines)
+      iNumPrintLines = g_staticParams.options.iNumPeptideOutputLines;
+
+   for (int iWhichResult = 0; iWhichResult < iNumPrintLines; ++iWhichResult)
+   {
+      if (pQuery->_pResults[iWhichResult].fXcorr <= g_staticParams.options.dMinimumXcorr)
+         continue;
+
+      std::vector<string> vProteinTargets;
+      std::vector<string> vProteinDecoys;
+      unsigned int uiNumTotProteins = 0;
+      bool bReturnFullProteinString = false;
+      GetProteinNameString(fpdb,
+                           iWhichQuery,
+                           iWhichResult,
+                           1,
+                           bReturnFullProteinString,
+                           &uiNumTotProteins,
+                           vProteinTargets,
+                           vProteinDecoys);
+
+      for (auto it = vProteinTargets.begin(); it != vProteinTargets.end(); ++it)
+      {
+         if (!strncmp((*it).c_str(), "COMETPLUS_NOVEL_", 16))
+            return true;
+      }
+   }
+
+   return false;
+}
+
 
 // return nth entry in string s
 string CometMassSpecUtils::GetField(std::string *s,

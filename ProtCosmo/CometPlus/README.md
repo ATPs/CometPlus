@@ -115,7 +115,7 @@ For `WITH_MZMLB=1` (mzMLb enabled), the same command should show `H5...` symbols
   - `.mzML.gz` -> temp `.mzML`
   - `.mgf.gz` -> temp `.mgf`
 - Temporary file behavior:
-  - temporary file directory is derived from the output base path (`-N/--name` or input basename),
+  - temporary file directory is derived from `--output-folder` (default current directory),
   - the original input path remains the original `.gz` path for reporting/metadata,
   - temporary file is removed automatically at normal completion and handled error exits.
 - `ms2.gz` is not supported in this milestone.
@@ -197,6 +197,10 @@ This section documents design and usage for:
 - `--novel_peptide <file>`
 - `--scan <file>`
 - `--scan_numbers <list>`
+- `--output-folder <dir>`
+- `--output_internal_novel_peptide <file>`
+- `--internal_novel_peptide <file>`
+- `--stop-after-saving-novel-peptide`
 
 These options are implemented as additive orchestration in CometPlus and preserve normal Comet behavior when not used.
 
@@ -204,12 +208,34 @@ These options are implemented as additive orchestration in CometPlus and preserv
 
 - `--novel_protein <file>`
   - Input must be FASTA.
-  - Proteins are digested with the active Comet settings.
+  - Proteins are digested with the active Comet settings to generate peptide candidates.
+  - Candidate peptides are merged with `--novel_peptide` candidates (if provided), then one subtraction pass is applied against known DB peptides.
 
 - `--novel_peptide <file>`
   - Input supports either FASTA or tokenized text.
   - FASTA mode is auto-detected if any non-empty trimmed line begins with `>`.
   - Tokenized mode accepts delimiters: comma, space, tab, newline.
+  - In mixed mode (`--novel_protein` + `--novel_peptide`), both sources share one deduplicated candidate map before subtraction.
+
+- `--output-folder <dir>`
+  - Default: current directory (`.`).
+  - All normal search outputs are routed here (instead of input spectrum directories).
+  - CometPlus temporary artifacts used by novel/scan workflows are also created under this directory.
+
+- `--output_internal_novel_peptide <file>`
+  - Exports subtraction result as internal TSV (`peptide`, `peptide_id`, `protein_id`).
+  - Requires at least one of `--novel_protein` / `--novel_peptide`.
+  - If `<file>` contains no directory component, file is created under `--output-folder`.
+  - If `<file>` includes a directory path, missing directories are created recursively.
+
+- `--internal_novel_peptide <file>`
+  - Reuses an exported internal TSV and skips novel-vs-known subtraction.
+  - Mutually exclusive with `--novel_protein` and `--novel_peptide`.
+  - If `<file>` is relative, it is resolved from current working directory (not `--output-folder`).
+
+- `--stop-after-saving-novel-peptide`
+  - Must be used with `--output_internal_novel_peptide`.
+  - Workflow exits successfully after saving internal TSV and does not perform spectrum prefilter/search.
 
 - `--scan <file>`
   - File-based explicit scan list.
@@ -223,31 +249,49 @@ These options are implemented as additive orchestration in CometPlus and preserv
 When any novel option or explicit scan option is used, CometPlus runs this flow:
 
 1. Resolve known DB input from repeatable `--database` values (or `database_name` in params if CLI does not provide one).
-2. Parse known peptide universe for subtraction:
+2. Resolve output root (`--output-folder`, default `.`), create directory if needed, and route output basenames to this directory.
+3. Pre-check planned output collisions:
+   - internal collisions within this run (same target path planned multiple times),
+   - pre-existing files on disk.
+   Any collision causes early error and exit.
+4. Build novel candidates:
+   - from `--novel_protein` digestion and/or `--novel_peptide` parsing, then merge and deduplicate by normalized peptide identity,
+   - or load from `--internal_novel_peptide` and skip subtraction.
+5. Parse known peptide universe for subtraction when using fresh novel inputs:
    - known `.idx`: read directly, no rebuild and no mutation.
    - known FASTA: temporary peptide index generation is used for extraction.
-3. Build novel peptide candidates from:
-   - `--novel_protein` (digested under current params), and/or
-   - `--novel_peptide` (FASTA or tokenized text).
-4. Normalize peptide identity for subtraction using `equal_I_and_L`:
+6. Normalize peptide identity for subtraction using `equal_I_and_L`:
    - `equal_I_and_L=1`: `I` and `L` are equivalent.
    - `equal_I_and_L=0`: `I` and `L` are distinct.
-5. Remove novel candidates already present in known DB(s).
-6. Materialize retained novel peptides as temporary scoring DB input and append to known DB list.
-7. Parse explicit scans from `--scan_numbers` and `--scan`, union and deduplicate.
-8. Intersect explicit scans with any scan-range constraint (`-F/-L` or `--first-scan/--last-scan`).
-9. Filter spectra into temporary MGF files:
+7. Remove novel candidates already present in known DB(s) (skipped when `--internal_novel_peptide` is used).
+8. Assign/retain novel IDs:
+   - fresh subtraction records are named `COMETPLUS_NOVEL_<n>`,
+   - imported internal records preserve input `peptide_id`.
+9. Optionally write internal TSV (`--output_internal_novel_peptide`) with columns:
+   - `peptide`: normalized peptide sequence,
+   - `peptide_id`: `COMETPLUS_NOVEL_<n>` or imported ID,
+   - `protein_id`: semicolon-separated source list (protein IDs for protein source; peptide sequence for peptide source).
+10. If `--stop-after-saving-novel-peptide` is set, exit after step 9.
+11. Materialize retained novel peptides as temporary scoring DB input and append to known DB list.
+12. Parse explicit scans from `--scan_numbers` and `--scan`, union and deduplicate.
+13. Intersect explicit scans with any scan-range constraint (`-F/-L` or `--first-scan/--last-scan`).
+14. Filter spectra into temporary MGF files:
    - by explicit scan set if provided,
    - and, in novel mode, by precursor-mass plausibility against retained novel peptide masses.
-10. Search only filtered spectra and write normal outputs.
+15. Search only filtered spectra.
+16. In novel mode, output files (`txt/sqt/pepXML/mzid/pin`) keep only spectra whose target-side printable PSMs include at least one `COMETPLUS_NOVEL_...` hit. With `decoy_search=2`, target and decoy records are retained/dropped together at spectrum level.
 
 ### Input Validation and Error Conditions
 
 - Scan tokens must be positive integers (`1..INT_MAX`); malformed or out-of-range tokens fail fast.
 - `--novel_peptide` with no parsed peptide entries fails fast.
-- `--novel_protein/--novel_peptide/--scan/--scan_numbers` cannot be used with index-creation modes `-i` or `-j`.
+- `--novel_protein/--novel_peptide/--scan/--scan_numbers` (and internal TSV export) cannot be used with index-creation modes `-i` or `-j`.
 - Novel mode requires a known database source (`--database` or `database_name` in params).
-- At least one spectrum input file is required when using novel/scan-subset options.
+- At least one spectrum input file is required for novel/scan-subset runs, except `--stop-after-saving-novel-peptide`.
+- `--output_internal_novel_peptide` requires `--novel_protein` and/or `--novel_peptide`.
+- `--internal_novel_peptide` cannot be combined with `--novel_protein` or `--novel_peptide`.
+- `--stop-after-saving-novel-peptide` requires `--output_internal_novel_peptide`.
+- When `--name` and `--output-folder` are both specified, `--name` must be a base name (no path separators).
 
 ### Usage Examples
 
@@ -287,6 +331,7 @@ Combined novel protein + novel peptide + dual scan sources:
   --params /path/to/comet.params \
   --database /path/to/known_target.idx \
   --database /path/to/known_decoy.idx \
+  --output-folder /path/to/out \
   --novel_protein /path/to/novel_proteins.fasta \
   --novel_peptide /path/to/novel_peptides.fasta \
   --scan /path/to/scan_ids.txt \
@@ -294,6 +339,27 @@ Combined novel protein + novel peptide + dual scan sources:
   --first-scan 2500 \
   --last-scan 6000 \
   --name run_novel_scan_subset \
+  /path/to/input.mzMLb
+```
+
+Export internal novel TSV and stop before search:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known.idx \
+  --output-folder /path/to/out \
+  --novel_protein /path/to/novel_proteins.fasta \
+  --output_internal_novel_peptide internal_novel.tsv \
+  --stop-after-saving-novel-peptide
+```
+
+Reuse internal novel TSV and run search directly:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known.idx \
+  --output-folder /path/to/out \
+  --internal_novel_peptide /path/to/out/internal_novel.tsv \
   /path/to/input.mzMLb
 ```
 

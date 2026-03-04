@@ -22,6 +22,7 @@ extern comet_fileoffset_t clSizeCometFileOffset;
 
 bool g_bCometPlusMultiDbMode = false;
 bool g_bCometPlusMultiIdxMode = false;
+bool g_bCometPlusNovelOutputOnly = false;
 vector<string> g_vCometPlusDatabaseList;
 vector<CometPlusIdxContext> g_vCometPlusIdxContexts;
 vector<string> g_vCometPlusGlobalProteinNames;
@@ -123,11 +124,17 @@ void CometPlusResetMultiDBState()
 {
    g_bCometPlusMultiDbMode = false;
    g_bCometPlusMultiIdxMode = false;
+   g_bCometPlusNovelOutputOnly = false;
    g_vCometPlusDatabaseList.clear();
    g_vCometPlusIdxContexts.clear();
    g_vCometPlusGlobalProteinNames.clear();
    g_vCometPlusGlobalProteinSets.clear();
    g_mCometPlusProteinSetKeyToIndex.clear();
+}
+
+void CometPlusSetNovelOutputOnly(bool bEnable)
+{
+   g_bCometPlusNovelOutputOnly = bEnable;
 }
 
 vector<string> CometPlusSplitDatabaseList(const string& sList)

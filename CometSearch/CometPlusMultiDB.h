@@ -33,6 +33,7 @@ struct CometPlusIdxContext
 
 extern bool g_bCometPlusMultiDbMode;
 extern bool g_bCometPlusMultiIdxMode;
+extern bool g_bCometPlusNovelOutputOnly;
 extern vector<string> g_vCometPlusDatabaseList;
 extern vector<CometPlusIdxContext> g_vCometPlusIdxContexts;
 
@@ -57,5 +58,6 @@ int CometPlusMergeProteinSetIndices(comet_fileoffset_t lSetA, comet_fileoffset_t
 bool CometPlusGetProteinSet(comet_fileoffset_t lSetIndex, vector<int>& vOutProteinIds);
 bool CometPlusGetFirstProteinIdInSet(comet_fileoffset_t lSetIndex, int& iFirstProteinId);
 bool CometPlusGetProteinNameById(int iProteinId, string& sName);
+void CometPlusSetNovelOutputOnly(bool bEnable);
 
 #endif // _COMETPLUSMULTIDB_H_

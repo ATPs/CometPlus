@@ -3382,7 +3382,7 @@ bool CometSearchManager::DoSearch()
             // For mzid output, dump psms as tab-delimited text first then collate results to
             // mzid file at very end due to requirements of this format.
             if (g_staticParams.options.iOutputMzIdentMLFile)
-               CometWriteMzIdentML::WriteMzIdentMLTmp(fpout_mzidentmltmp, fpoutd_mzidentmltmp, iBatchNum);
+               CometWriteMzIdentML::WriteMzIdentMLTmp(fpout_mzidentmltmp, fpoutd_mzidentmltmp, fpdb, iBatchNum);
 
             if (g_staticParams.options.bOutputPercolatorFile)
             {

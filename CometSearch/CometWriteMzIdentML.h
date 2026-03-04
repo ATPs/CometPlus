@@ -53,6 +53,7 @@ public:
 
    static void WriteMzIdentMLTmp(FILE *fpout,
                                  FILE *fpoutd,
+                                 FILE *fpdb,
                                  int iBatchNum);
 
    static void WriteMzIdentML(FILE *fpout,

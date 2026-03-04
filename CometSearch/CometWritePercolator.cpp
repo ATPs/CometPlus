@@ -40,6 +40,9 @@ bool CometWritePercolator::WritePercolator(FILE *fpout,
    // Print results.
    for (i=0; i<(int)g_pvQuery.size(); ++i)
    {
+      if (!CometMassSpecUtils::QueryHasNovelTargetResult(fpdb, i))
+         continue;
+
       if (g_pvQuery.at(i)->_pResults[0].fXcorr > g_staticParams.options.dMinimumXcorr)
       {
          PrintResults(i, fpout, fpdb, 0, iLenDecoyPrefix);  // print search hit (could be decoy if g_staticParams.options.iDecoySearch=1)

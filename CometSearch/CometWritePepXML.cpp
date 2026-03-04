@@ -45,14 +45,26 @@ void CometWritePepXML::WritePepXML(FILE *fpout,
    if (g_staticParams.options.iDecoySearch == 2)
    {
       for (i=0; i<(int)g_pvQuery.size(); ++i)
+      {
+         if (!CometMassSpecUtils::QueryHasNovelTargetResult(fpdb, i))
+            continue;
          PrintResults(i, 1, fpout, fpdb, iNumSpectraSearched);
+      }
       for (i=0; i<(int)g_pvQuery.size(); ++i)
+      {
+         if (!CometMassSpecUtils::QueryHasNovelTargetResult(fpdb, i))
+            continue;
          PrintResults(i, 2, fpoutd, fpdb, iNumSpectraSearched);
+      }
    }
    else
    {
       for (i=0; i<(int)g_pvQuery.size(); ++i)
+      {
+         if (!CometMassSpecUtils::QueryHasNovelTargetResult(fpdb, i))
+            continue;
          PrintResults(i, 0, fpout, fpdb, iNumSpectraSearched);
+      }
    }
 
    fflush(fpout);
