@@ -202,6 +202,7 @@ This section documents design and usage for:
 - `--internal_novel_peptide <file>`
 - `--stop-after-saving-novel-peptide`
 - `--keep-tmp`
+- `--run-comet-each`
 
 These options are implemented as additive orchestration in CometPlus and preserve normal Comet behavior when not used.
 
@@ -222,7 +223,10 @@ These options are implemented as additive orchestration in CometPlus and preserv
   - Default: current directory (`.`).
   - All normal search outputs are routed here (instead of input spectrum directories).
   - CometPlus temporary artifacts used by novel/scan workflows are also created under this directory.
-  - In novel mode with multiple spectrum inputs, filtered MGF shards are merged and searched once; default merged output base is `<output-folder>/cometplus_novel_merged` unless `--name` is provided.
+  - In novel mode with multiple spectrum inputs:
+    - default path: filtered MGF shards are merged and searched once,
+    - `--run-comet-each` path (peptide `.idx` known DB only): filtered shards are grouped into balanced merged task-MGF files, then searched in child processes and merged as one final pin.
+  - Default merged output base is `<output-folder>/cometplus_novel_merged` unless `--name` is provided.
 
 - `--output_internal_novel_peptide <file>`
   - Exports subtraction result as detailed internal TSV with columns:
@@ -245,6 +249,20 @@ These options are implemented as additive orchestration in CometPlus and preserv
 - `--keep-tmp`
   - Keeps CometPlus temporary artifacts on exit for debugging.
   - By default (without this flag), temporary artifacts are removed on exit.
+
+- `--run-comet-each`
+  - Optional acceleration mode for novel multi-input runs with known peptide `.idx` databases (`-j` type).
+  - Parent process still runs novel workflow + prefilter, then builds grouped merged task-MGF files from filtered shards.
+  - One child `cometplus` process is launched per grouped task-MGF, each producing a task `.pin`; final output is one merged `.pin`.
+  - Only pin output is guaranteed in this mode (other output formats are disabled for task child jobs).
+  - If prerequisites are not met, CometPlus logs a warning and falls back to the normal merged-MGF single-search path.
+  - Grouping and thread policy:
+    - total threads `T`: use `--thread` when `>0`, else params `num_threads` when `>0`, else error.
+    - target grouped task count `N`: `N = max(1, T / 4)` (integer division), then cap by filtered shard count (`N <= shard_count`).
+    - if `N == shard_count`, no grouping merge is needed (each shard is one task).
+    - when grouping is needed, larger shards are assigned first to the current smallest group to balance merged task-MGF sizes.
+    - `T` is split across `N` tasks as evenly as possible (difference at most 1 thread per task).
+    - child process concurrency equals grouped task count `N`.
 
 - `--scan <file>`
   - File-based explicit scan list.
@@ -292,9 +310,12 @@ When any novel option or explicit scan option is used, CometPlus runs this flow:
 14. Filter spectra into temporary MGF files (parallel workers based on `--thread` or `num_threads`):
    - by explicit scan set if provided,
    - and, in novel mode, by precursor-mass plausibility against retained novel peptide masses.
-15. If novel mode has more than one spectrum input, merge filtered MGFs into one temporary MGF while preserving each spectrum `TITLE=`.
+15. If novel mode has more than one spectrum input:
+   - default path: merge filtered MGFs into one temporary MGF while preserving each spectrum `TITLE=`.
+   - `--run-comet-each` path (peptide `.idx` known DB only): regroup filtered shards into `N` balanced merged task-MGF files (`N = max(1, total_threads / 4)`, capped by shard count).
 16. Search:
-   - merged novel path: one search input (one output set),
+   - default merged novel path: one search input (one output set),
+   - `--run-comet-each` path: one child search per grouped task-MGF and merged final `.pin`,
    - otherwise: one search input per filtered file (legacy behavior).
 17. In novel mode, output files (`txt/sqt/pepXML/mzid/pin`) keep only spectra that pass target-side printable PSM gate:
    - no printable novel target PSM => drop spectrum,
@@ -315,6 +336,8 @@ When any novel option or explicit scan option is used, CometPlus runs this flow:
 - `--stop-after-saving-novel-peptide` requires `--output_internal_novel_peptide`.
 - When `--name` and `--output-folder` are both specified, `--name` must be a base name (no path separators).
 - `--name` with multiple spectrum inputs is accepted only for merged multi-input novel mode; otherwise it remains single-input only.
+- `--run-comet-each` is effective only when all prerequisites are met (novel mode + multi-input + known peptide `.idx`); otherwise it logs warning and falls back.
+- Effective `--run-comet-each` requires positive total threads from `--thread` or params `num_threads`.
 
 ### Usage Examples
 
@@ -372,6 +395,20 @@ Multi-input novel mode (parallel prefilter + merged single search):
   --database /path/to/known.idx \
   --output-folder /path/to/out \
   --novel_protein /path/to/novel_proteins.fasta \
+  --name merged_run \
+  /path/to/input_a.mzMLb /path/to/input_b.mzMLb
+```
+
+Multi-input novel peptide-idx mode with grouped-task cometplus and merged pin:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known_a.idx \
+  --database /path/to/known_b.idx \
+  --internal_novel_peptide /path/to/internal_novel.tsv \
+  --run-comet-each \
+  --thread 32 \
+  --output-folder /path/to/out \
   --name merged_run \
   /path/to/input_a.mzMLb /path/to/input_b.mzMLb
 ```

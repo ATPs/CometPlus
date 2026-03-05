@@ -83,13 +83,24 @@ int main(int argc, char *argv[])
    char szParamsFile[SIZE_FILE];
    string sMergedDatabasePath;
    vector<string> vTempArtifacts;
+   bool bSearchAlreadyRun = false;
+   bool bSearchSucceeded = false;
 
-   ProcessCmdLine(argc, argv, szParamsFile, pvInputFiles, pCometSearchMgr, sMergedDatabasePath, vTempArtifacts);
-   pCometSearchMgr->AddInputFiles(pvInputFiles);
+   ProcessCmdLine(argc,
+                  argv,
+                  szParamsFile,
+                  pvInputFiles,
+                  pCometSearchMgr,
+                  sMergedDatabasePath,
+                  vTempArtifacts,
+                  bSearchAlreadyRun,
+                  bSearchSucceeded);
 
-   bool bSearchSucceeded;
-
-   bSearchSucceeded = pCometSearchMgr->DoSearch();
+   if (!bSearchAlreadyRun)
+   {
+      pCometSearchMgr->AddInputFiles(pvInputFiles);
+      bSearchSucceeded = pCometSearchMgr->DoSearch();
+   }
 
    if (g_bCometPlusKeepTempFiles)
    {
@@ -152,6 +163,7 @@ void Usage(char *pszCmd,
    logout("                 --output_internal_novel_peptide <file> write detailed internal novel peptide TSV\n");
    logout("                 --internal_novel_peptide <file> reuse internal novel peptide TSV input\n");
    logout("                 --stop-after-saving-novel-peptide stop after writing internal novel peptide TSV\n");
+   logout("                 --run-comet-each     novel multi-input peptide-.idx mode: grouped-MGF child cometplus search + merged pin\n");
    logout("                 --keep-tmp            keep temporary artifacts on exit for debugging\n");
    logout("                 env COMETPLUS_PREFILTER_WORKER can override worker path for mzMLb process-prefilter\n");
    logout("                 --scan <file>          scan filter file; delimiters: comma/space/tab/newline\n");
@@ -292,6 +304,13 @@ void Usage(char *pszCmd,
       logout("      detailed format enables direct precomputed-mass reuse for prefilter fast-path\n");
       logout("   --stop-after-saving-novel-peptide\n");
       logout("      requires --output_internal_novel_peptide; exit after TSV export (skip prefilter/search)\n");
+      logout("   --run-comet-each\n");
+      logout("      enabled only when novel mode has multiple input spectra and known DBs are peptide .idx (-j) files\n");
+      logout("      workflow: keep filtered MGF shards, group them into merged task-MGF files, run one cometplus child per task, merge task pin files to one merged pin\n");
+      logout("      grouped-task count N: N = max(1, total_threads / 4); if N >= shard_count, N = shard_count (no grouping merge)\n");
+      logout("      grouping policy: assign larger shards first to current smallest group so merged task-MGF sizes stay balanced\n");
+      logout("      per-task thread policy: split total_threads across N tasks as evenly as possible (difference at most 1)\n");
+      logout("      fallback: if prerequisites are not met, a warning is logged and normal merged-MGF single-search workflow is used\n");
       logout("   --keep-tmp\n");
       logout("      keep temporary artifacts instead of deleting them at exit\n");
 

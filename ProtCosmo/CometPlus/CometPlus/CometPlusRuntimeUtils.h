@@ -45,6 +45,11 @@ bool FindExecutableOnPath(const string& sExeName, string& sOutPath);
 bool ResolvePrefilterWorkerExecutablePath(const string& sMainExePath,
                                           string& sOutPath,
                                           string& sErrorMsg);
+bool RunExternalCommand(const std::vector<string>& vArgs,
+                        string& sErrorMsg);
+bool MergePercolatorPinFiles(const std::vector<string>& vShardPinFiles,
+                             const string& sMergedPinFile,
+                             string& sErrorMsg);
 
 bool WriteIntegerSetToTempFile(const std::set<int>& setValues,
                                const string& sPrefix,

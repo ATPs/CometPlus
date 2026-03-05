@@ -34,6 +34,7 @@ void PrepareInputFilesWithPrefilter(vector<InputFileInfo*>& vParsedInputs,
                                     bool bNovelMode,
                                     const std::vector<double>& vNovelMasses,
                                     bool bUseNovelMergedSearch,
+                                    bool bRunCometEach,
                                     const string& sNovelMergedOutputBase,
                                     bool bCreateFragmentIndex,
                                     bool bCreatePeptideIndex,
@@ -366,7 +367,7 @@ void PrepareInputFilesWithPrefilter(vector<InputFileInfo*>& vParsedInputs,
 
    LogStageTiming("scan prefilter (parallel)", tPrefilterStart, tProgramStart);
 
-   if (bUseNovelMergedSearch)
+   if (bUseNovelMergedSearch && !bRunCometEach)
    {
       auto tMergeStart = std::chrono::steady_clock::now();
 
@@ -429,11 +430,23 @@ void PrepareInputFilesWithPrefilter(vector<InputFileInfo*>& vParsedInputs,
    }
 
    char szSummary[1024];
-   if (bUseNovelMergedSearch)
+   if (bUseNovelMergedSearch && !bRunCometEach)
    {
       snprintf(szSummary,
                sizeof(szSummary),
                " [%s] search setup: spectra_inputs=%zu (merged from %zu source files), novel_mode=%s, explicit_scan_filter=%s, novel_mass_count=%zu\n",
+               GetLocalTimestampString().c_str(),
+               pvInputFiles.size(),
+               vPrefilterResults.size(),
+               BoolToOnOffString(bNovelMode),
+               BoolToOnOffString(novelOpts.HasExplicitScanFilter()),
+               vNovelMasses.size());
+   }
+   else if (bRunCometEach)
+   {
+      snprintf(szSummary,
+               sizeof(szSummary),
+               " [%s] search setup: spectra_inputs=%zu (run-comet-each shards from %zu source files), novel_mode=%s, explicit_scan_filter=%s, novel_mass_count=%zu\n",
                GetLocalTimestampString().c_str(),
                pvInputFiles.size(),
                vPrefilterResults.size(),

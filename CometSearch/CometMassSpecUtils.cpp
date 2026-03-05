@@ -27,6 +27,33 @@
 
 int iRet;
 
+static bool IsCometPlusNovelProteinName(const std::string& sProteinName)
+{
+   const char* szProteinName = sProteinName.c_str();
+
+   int iLenDecoyPrefix = (int)strlen(g_staticParams.szDecoyPrefix);
+   if (iLenDecoyPrefix > 0 && !strncmp(szProteinName, g_staticParams.szDecoyPrefix, iLenDecoyPrefix))
+      szProteinName += iLenDecoyPrefix;
+
+   return !strncmp(szProteinName, "COMETPLUS_NOVEL_", 16);
+}
+
+static void ClassifyProteinNameSet(const std::vector<string>& vProteins,
+                                   bool& bHasNovel,
+                                   bool& bHasKnown)
+{
+   for (auto it = vProteins.begin(); it != vProteins.end(); ++it)
+   {
+      if (IsCometPlusNovelProteinName(*it))
+         bHasNovel = true;
+      else
+         bHasKnown = true;
+
+      if (bHasNovel && bHasKnown)
+         return;
+   }
+}
+
 double CometMassSpecUtils::GetFragmentIonMass(int iWhichIonSeries,
                                               int i,
                                               int ctCharge,
@@ -393,10 +420,6 @@ bool CometMassSpecUtils::QueryHasNovelTargetResult(FILE *fpdb,
    if (pQuery->iMatchPeptideCount <= 0)
       return false;
 
-   int iNumPrintLines = pQuery->iMatchPeptideCount;
-   if (iNumPrintLines > g_staticParams.options.iNumPeptideOutputLines)
-      iNumPrintLines = g_staticParams.options.iNumPeptideOutputLines;
-
    struct PsmNovelClass
    {
       float fXcorr;
@@ -405,59 +428,85 @@ bool CometMassSpecUtils::QueryHasNovelTargetResult(FILE *fpdb,
    };
 
    std::vector<PsmNovelClass> vPrintablePsmClasses;
-   vPrintablePsmClasses.reserve(iNumPrintLines);
+   int iNumPrintableTargetLines = pQuery->iMatchPeptideCount;
+   if (iNumPrintableTargetLines > g_staticParams.options.iNumPeptideOutputLines)
+      iNumPrintableTargetLines = g_staticParams.options.iNumPeptideOutputLines;
+
+   int iNumPrintableDecoyLines = 0;
+   if (g_staticParams.options.iDecoySearch == 2)
+   {
+      iNumPrintableDecoyLines = pQuery->iDecoyMatchPeptideCount;
+      if (iNumPrintableDecoyLines > g_staticParams.options.iNumPeptideOutputLines)
+         iNumPrintableDecoyLines = g_staticParams.options.iNumPeptideOutputLines;
+   }
+
+   vPrintablePsmClasses.reserve(iNumPrintableTargetLines + iNumPrintableDecoyLines);
 
    bool bAnyNovel = false;
    bool bAnyKnown = false;
 
-   for (int iWhichResult = 0; iWhichResult < iNumPrintLines; ++iWhichResult)
+   auto CollectPrintablePsmClasses = [&](Results* pOutput,
+                                         int iMatchPeptideCount,
+                                         int iPrintTargetDecoy)
    {
-      if (pQuery->_pResults[iWhichResult].fXcorr <= g_staticParams.options.dMinimumXcorr)
-         continue;
+      int iNumPrintLines = iMatchPeptideCount;
+      if (iNumPrintLines > g_staticParams.options.iNumPeptideOutputLines)
+         iNumPrintLines = g_staticParams.options.iNumPeptideOutputLines;
 
-      std::vector<string> vProteinTargets;
-      std::vector<string> vProteinDecoys;
-      unsigned int uiNumTotProteins = 0;
-      bool bReturnFullProteinString = false;
-      GetProteinNameString(fpdb,
-                           iWhichQuery,
-                           iWhichResult,
-                           1,
-                           bReturnFullProteinString,
-                           &uiNumTotProteins,
-                           vProteinTargets,
-                           vProteinDecoys);
-
-      bool bHasNovel = false;
-      bool bHasKnown = false;
-      for (auto it = vProteinTargets.begin(); it != vProteinTargets.end(); ++it)
+      for (int iWhichResult = 0; iWhichResult < iNumPrintLines; ++iWhichResult)
       {
-         if (!strncmp((*it).c_str(), "COMETPLUS_NOVEL_", 16))
-            bHasNovel = true;
-         else
-            bHasKnown = true;
+         if (pOutput[iWhichResult].fXcorr <= g_staticParams.options.dMinimumXcorr)
+            continue;
 
-         if (bHasNovel && bHasKnown)
-            break;
+         std::vector<string> vProteinTargets;
+         std::vector<string> vProteinDecoys;
+         unsigned int uiNumTotProteins = 0;
+         bool bReturnFullProteinString = false;
+         GetProteinNameString(fpdb,
+                              iWhichQuery,
+                              iWhichResult,
+                              iPrintTargetDecoy,
+                              bReturnFullProteinString,
+                              &uiNumTotProteins,
+                              vProteinTargets,
+                              vProteinDecoys);
+
+         bool bHasNovel = false;
+         bool bHasKnown = false;
+         ClassifyProteinNameSet(vProteinTargets, bHasNovel, bHasKnown);
+         ClassifyProteinNameSet(vProteinDecoys, bHasNovel, bHasKnown);
+
+         if (bHasNovel)
+            bAnyNovel = true;
+         if (bHasKnown)
+            bAnyKnown = true;
+
+         PsmNovelClass psmClass = {};
+         psmClass.fXcorr = pOutput[iWhichResult].fXcorr;
+         psmClass.bHasNovel = bHasNovel;
+         psmClass.bHasKnown = bHasKnown;
+         vPrintablePsmClasses.push_back(psmClass);
       }
+   };
 
-      if (bHasNovel)
-         bAnyNovel = true;
-      if (bHasKnown)
-         bAnyKnown = true;
+   // include target-side printable PSMs (and attached decoy proteins when present)
+   CollectPrintablePsmClasses(pQuery->_pResults,
+                              pQuery->iMatchPeptideCount,
+                              0);
 
-      PsmNovelClass psmClass = {};
-      psmClass.fXcorr = pQuery->_pResults[iWhichResult].fXcorr;
-      psmClass.bHasNovel = bHasNovel;
-      psmClass.bHasKnown = bHasKnown;
-      vPrintablePsmClasses.push_back(psmClass);
+   // include decoy-only printable PSMs when decoys are reported in a separate list
+   if (g_staticParams.options.iDecoySearch == 2)
+   {
+      CollectPrintablePsmClasses(pQuery->_pDecoys,
+                                 pQuery->iDecoyMatchPeptideCount,
+                                 2);
    }
 
-   // No printable target PSM mapped to novel entries.
+   // No printable PSM mapped to novel entries.
    if (!bAnyNovel)
       return false;
 
-   // All printable target PSM are novel-only.
+   // All printable PSM are novel-only.
    if (!bAnyKnown)
       return true;
 

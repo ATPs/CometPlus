@@ -317,6 +317,136 @@ static string EscapeShellArgLocal(const string& sArg)
 #endif
 }
 
+bool RunExternalCommand(const vector<string>& vArgs,
+                        string& sErrorMsg)
+{
+   sErrorMsg.clear();
+
+   if (vArgs.empty())
+   {
+      sErrorMsg = " Error - external command is empty.\n";
+      return false;
+   }
+
+   string sCmd;
+   for (size_t i = 0; i < vArgs.size(); ++i)
+   {
+      if (i > 0)
+         sCmd += " ";
+      sCmd += EscapeShellArgLocal(vArgs.at(i));
+   }
+
+   int iReturnCode = system(sCmd.c_str());
+#ifdef _WIN32
+   if (iReturnCode != 0)
+   {
+      sErrorMsg = " Error - external command failed with return code "
+         + std::to_string(iReturnCode) + ".\n";
+      return false;
+   }
+#else
+   if (iReturnCode == -1)
+   {
+      sErrorMsg = " Error - failed to execute external command.\n";
+      return false;
+   }
+   if (!(WIFEXITED(iReturnCode) && WEXITSTATUS(iReturnCode) == 0))
+   {
+      sErrorMsg = " Error - external command failed with return code "
+         + std::to_string(iReturnCode) + ".\n";
+      return false;
+   }
+#endif
+
+   return true;
+}
+
+bool MergePercolatorPinFiles(const vector<string>& vShardPinFiles,
+                             const string& sMergedPinFile,
+                             string& sErrorMsg)
+{
+   sErrorMsg.clear();
+
+   if (vShardPinFiles.empty())
+   {
+      sErrorMsg = " Error - no shard pin files provided for merge.\n";
+      return false;
+   }
+
+   std::ofstream outFile(sMergedPinFile.c_str(), std::ios::out | std::ios::binary | std::ios::trunc);
+   if (!outFile.good())
+   {
+      sErrorMsg = " Error - cannot create merged pin file \"" + sMergedPinFile + "\".\n";
+      return false;
+   }
+
+   string sHeaderLine;
+   bool bHeaderSet = false;
+   for (size_t i = 0; i < vShardPinFiles.size(); ++i)
+   {
+      const string& sShardPinFile = vShardPinFiles.at(i);
+      std::ifstream inFile(sShardPinFile.c_str(), std::ios::in | std::ios::binary);
+      if (!inFile.good())
+      {
+         outFile.close();
+         remove(sMergedPinFile.c_str());
+         sErrorMsg = " Error - cannot read shard pin file \"" + sShardPinFile + "\".\n";
+         return false;
+      }
+
+      string sLine;
+      if (!std::getline(inFile, sLine))
+      {
+         outFile.close();
+         remove(sMergedPinFile.c_str());
+         sErrorMsg = " Error - shard pin file is empty: \"" + sShardPinFile + "\".\n";
+         return false;
+      }
+      if (!sLine.empty() && sLine[sLine.length() - 1] == '\r')
+         sLine.erase(sLine.length() - 1);
+
+      if (!bHeaderSet)
+      {
+         sHeaderLine = sLine;
+         bHeaderSet = true;
+         outFile << sHeaderLine << "\n";
+      }
+      else if (sLine != sHeaderLine)
+      {
+         outFile.close();
+         remove(sMergedPinFile.c_str());
+         sErrorMsg = " Error - shard pin header mismatch for file \"" + sShardPinFile + "\".\n";
+         return false;
+      }
+
+      while (std::getline(inFile, sLine))
+      {
+         if (!sLine.empty() && sLine[sLine.length() - 1] == '\r')
+            sLine.erase(sLine.length() - 1);
+         outFile << sLine << "\n";
+      }
+
+      if (!inFile.eof())
+      {
+         outFile.close();
+         remove(sMergedPinFile.c_str());
+         sErrorMsg = " Error - failed while reading shard pin file \"" + sShardPinFile + "\".\n";
+         return false;
+      }
+   }
+
+   outFile.flush();
+   if (!outFile.good())
+   {
+      outFile.close();
+      remove(sMergedPinFile.c_str());
+      sErrorMsg = " Error - failed while writing merged pin file \"" + sMergedPinFile + "\".\n";
+      return false;
+   }
+
+   return true;
+}
+
 bool WriteIntegerSetToTempFile(const set<int>& setValues,
                                const string& sPrefix,
                                string& sOutPath,

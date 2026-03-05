@@ -20,12 +20,16 @@
 #include "CometPlusRuntimeUtils.h"
 #include "NovelModeUtils.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <map>
+#include <mutex>
 #include <set>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -39,9 +43,13 @@ void ProcessCmdLine(int argc,
                     vector<InputFileInfo*> &pvInputFiles,
                     ICometSearchManager *pSearchMgr,
                     string &sMergedDatabasePath,
-                    vector<string> &vTempArtifacts)
+                    vector<string> &vTempArtifacts,
+                    bool &bSearchAlreadyRun,
+                    bool &bSearchSucceeded)
 {
    const auto tProgramStart = std::chrono::steady_clock::now();
+   bSearchAlreadyRun = false;
+   bSearchSucceeded = false;
 
    if (argc == 1)
    {
@@ -62,6 +70,8 @@ void ProcessCmdLine(int argc,
    bool bSetThreadOverride = false;
    bool bHelpFull = false;
    bool bOutputFolderSpecified = false;
+   bool bRunCometEachRequested = false;
+   bool bForceNovelOutputOnly = false;
    int iFirstScan = 0;
    int iLastScan = 0;
    int iBatchSize = 0;
@@ -207,6 +217,26 @@ void ProcessCmdLine(int argc,
          {
             novelOpts.sScanNumbers = RequireValue(sName);
          }
+         else if (sName == "run-comet-each")
+         {
+            if (!sValue.empty())
+            {
+               string strErrorMsg = " Error - option --run-comet-each does not take a value.\n";
+               logerr(strErrorMsg);
+               exit(1);
+            }
+            bRunCometEachRequested = true;
+         }
+         else if (sName == "cometplus-novel-output-only")
+         {
+            if (!sValue.empty())
+            {
+               string strErrorMsg = " Error - option --cometplus-novel-output-only does not take a value.\n";
+               logerr(strErrorMsg);
+               exit(1);
+            }
+            bForceNovelOutputOnly = true;
+         }
          else
          {
             CmdParamOverride cliOverride;
@@ -348,6 +378,10 @@ void ProcessCmdLine(int argc,
    }
 
    LoadParameters(szParamsFile, pSearchMgr, vCliParamOverrides);
+
+   int iNumThreadsFromParams = 0;
+   if (!pSearchMgr->GetParamValue("num_threads", iNumThreadsFromParams))
+      iNumThreadsFromParams = 0;
 
    if (bSetFirstScan || bSetLastScan)
    {
@@ -527,6 +561,54 @@ void ProcessCmdLine(int argc,
 
    const bool bNovelMode = novelOpts.HasNovelMode();
    const bool bUseNovelMergedSearch = (bNovelMode && vParsedInputs.size() > 1);
+   bool bRunCometEach = false;
+   int iRunCometEachTotalThreads = 0;
+
+   if (bRunCometEachRequested)
+   {
+      vector<string> vDisableReasons;
+      if (!bNovelMode)
+         vDisableReasons.push_back("novel mode is off");
+      if (vParsedInputs.size() <= 1)
+         vDisableReasons.push_back("input_count<=1");
+      if (!bKnownAllIdx)
+         vDisableReasons.push_back("known database is not all .idx");
+      if (iKnownIdxType != 2)
+         vDisableReasons.push_back("known .idx type is not peptide index (-j)");
+
+      if (!vDisableReasons.empty())
+      {
+         string sReasonText;
+         for (size_t i = 0; i < vDisableReasons.size(); ++i)
+         {
+            if (i > 0)
+               sReasonText += "; ";
+            sReasonText += vDisableReasons.at(i);
+         }
+
+         char szWarnBuf[2048];
+         snprintf(szWarnBuf,
+                  sizeof(szWarnBuf),
+                  " Warning - --run-comet-each requested but disabled (%s). Falling back to merged-MGF single-search workflow.\n",
+                  sReasonText.c_str());
+         logout(szWarnBuf);
+      }
+      else
+      {
+         bRunCometEach = true;
+         if (bSetThreadOverride && iThreadOverride > 0)
+            iRunCometEachTotalThreads = iThreadOverride;
+         else if (iNumThreadsFromParams > 0)
+            iRunCometEachTotalThreads = iNumThreadsFromParams;
+
+         if (iRunCometEachTotalThreads <= 0)
+         {
+            string strErrorMsg = " Error - --run-comet-each requires a positive total thread count: set --thread > 0 or num_threads > 0 in params.\n";
+            logerr(strErrorMsg);
+            exit(1);
+         }
+      }
+   }
 
    if (bSetOutputName && vParsedInputs.size() != 1 && !bUseNovelMergedSearch)
    {
@@ -616,6 +698,22 @@ void ProcessCmdLine(int argc,
 
    if (!(bCreateFragmentIndex || bCreatePeptideIndex))
    {
+      bool bPlanOutputSqtFile = bOutputSqtFile;
+      bool bPlanOutputTxtFile = bOutputTxtFile;
+      bool bPlanOutputPepXmlFile = bOutputPepXmlFile;
+      int iPlanOutputMzidFile = iOutputMzidFile;
+      bool bPlanOutputPercolatorFile = bOutputPercolatorFile;
+
+      if (bRunCometEach)
+      {
+         // run-comet-each mode guarantees merged pin output only.
+         bPlanOutputSqtFile = false;
+         bPlanOutputTxtFile = false;
+         bPlanOutputPepXmlFile = false;
+         iPlanOutputMzidFile = 0;
+         bPlanOutputPercolatorFile = true;
+      }
+
       struct PlannedOutputInput
       {
          InputFileInfo inputInfo;
@@ -648,11 +746,11 @@ void ProcessCmdLine(int argc,
                                           vPlannedOutputInputs.at(i).sBaseName,
                                           sOutputSuffix,
                                           sTxtExt,
-                                          bOutputSqtFile,
-                                          bOutputTxtFile,
-                                          bOutputPepXmlFile,
-                                          iOutputMzidFile,
-                                          bOutputPercolatorFile,
+                                          bPlanOutputSqtFile,
+                                          bPlanOutputTxtFile,
+                                          bPlanOutputPepXmlFile,
+                                          iPlanOutputMzidFile,
+                                          bPlanOutputPercolatorFile,
                                           iDecoySearch,
                                           vPlannedOutputs);
       }
@@ -742,10 +840,11 @@ void ProcessCmdLine(int argc,
          vTempArtifacts.push_back(sMergedDatabasePath);
    }
 
+   const bool bEnableNovelOutputOnly = (bNovelMode || bForceNovelOutputOnly);
    char szNovelOutputOnlyParam[32];
-   snprintf(szNovelOutputOnlyParam, sizeof(szNovelOutputOnlyParam), "%d", bNovelMode ? 1 : 0);
-   pSearchMgr->SetParam("cometplus_novel_output_only", szNovelOutputOnlyParam, bNovelMode ? 1 : 0);
-   CometPlusSetNovelOutputOnly(bNovelMode);
+   snprintf(szNovelOutputOnlyParam, sizeof(szNovelOutputOnlyParam), "%d", bEnableNovelOutputOnly ? 1 : 0);
+   pSearchMgr->SetParam("cometplus_novel_output_only", szNovelOutputOnlyParam, bEnableNovelOutputOnly ? 1 : 0);
+   CometPlusSetNovelOutputOnly(bEnableNovelOutputOnly);
 
    PrepareInputFilesWithPrefilter(vParsedInputs,
                                   pvInputFiles,
@@ -756,9 +855,378 @@ void ProcessCmdLine(int argc,
                                   bNovelMode,
                                   vNovelMasses,
                                   bUseNovelMergedSearch,
+                                  bRunCometEach,
                                   sNovelMergedOutputBase,
                                   bCreateFragmentIndex,
                                   bCreatePeptideIndex,
                                   tProgramStart,
                                   vTempArtifacts);
+
+   if (!bRunCometEach)
+      return;
+
+   if (pvInputFiles.empty())
+   {
+      string strErrorMsg = " Error - --run-comet-each did not receive any filtered MGF shards.\n";
+      logerr(strErrorMsg);
+      exit(1);
+   }
+
+   struct RunEachSourceShard
+   {
+      string sInputMgfPath;
+      unsigned long long ullSizeBytes = 0;
+   };
+
+   struct RunEachTask
+   {
+      string sInputMgfPath;
+      int iTaskThreads = 1;
+      string sShardBaseName;
+      string sShardPinPath;
+      bool bSuccess = false;
+      string sErrorMsg;
+   };
+
+   auto ReadFileSizeBytes = [&](const string& sPath, unsigned long long& ullSizeBytes, string& sErrorMsg) -> bool
+   {
+      ullSizeBytes = 0;
+      sErrorMsg.clear();
+      std::ifstream inFile(sPath.c_str(), std::ios::in | std::ios::binary | std::ios::ate);
+      if (!inFile.good())
+      {
+         sErrorMsg = " Error - cannot read filtered MGF shard \"" + sPath + "\" for --run-comet-each grouping.\n";
+         return false;
+      }
+
+      std::ifstream::pos_type iEndPos = inFile.tellg();
+      if (iEndPos < 0)
+      {
+         sErrorMsg = " Error - cannot determine file size for filtered MGF shard \"" + sPath + "\".\n";
+         return false;
+      }
+
+      ullSizeBytes = static_cast<unsigned long long>(iEndPos);
+      return true;
+   };
+
+   vector<RunEachSourceShard> vSourceShards;
+   vSourceShards.reserve(pvInputFiles.size());
+   for (size_t i = 0; i < pvInputFiles.size(); ++i)
+   {
+      RunEachSourceShard shard;
+      shard.sInputMgfPath = pvInputFiles.at(i)->szFileName;
+      string sFileSizeError;
+      if (!ReadFileSizeBytes(shard.sInputMgfPath, shard.ullSizeBytes, sFileSizeError))
+      {
+         logerr(sFileSizeError);
+         exit(1);
+      }
+      vSourceShards.push_back(shard);
+   }
+
+   const size_t tSourceShardCount = vSourceShards.size();
+   int iTargetTaskCount = iRunCometEachTotalThreads / 4;
+   if (iTargetTaskCount < 1)
+      iTargetTaskCount = 1;
+   if ((size_t)iTargetTaskCount > tSourceShardCount)
+      iTargetTaskCount = (int)tSourceShardCount;
+
+   vector<vector<RunEachSourceShard>> vTaskGroups((size_t)iTargetTaskCount);
+   vector<unsigned long long> vTaskGroupBytes((size_t)iTargetTaskCount, 0);
+
+   if ((size_t)iTargetTaskCount == tSourceShardCount)
+   {
+      for (size_t i = 0; i < vSourceShards.size(); ++i)
+      {
+         vTaskGroups.at(i).push_back(vSourceShards.at(i));
+         vTaskGroupBytes.at(i) = vSourceShards.at(i).ullSizeBytes;
+      }
+   }
+   else
+   {
+      vector<RunEachSourceShard> vSortedShards = vSourceShards;
+      std::sort(vSortedShards.begin(),
+                vSortedShards.end(),
+                [](const RunEachSourceShard& a, const RunEachSourceShard& b)
+                {
+                   if (a.ullSizeBytes != b.ullSizeBytes)
+                      return a.ullSizeBytes > b.ullSizeBytes;
+                   return a.sInputMgfPath < b.sInputMgfPath;
+                });
+
+      for (size_t i = 0; i < vSortedShards.size(); ++i)
+      {
+         size_t iBestGroup = 0;
+         for (size_t iGroup = 1; iGroup < vTaskGroups.size(); ++iGroup)
+         {
+            if (vTaskGroupBytes.at(iGroup) < vTaskGroupBytes.at(iBestGroup))
+               iBestGroup = iGroup;
+            else if (vTaskGroupBytes.at(iGroup) == vTaskGroupBytes.at(iBestGroup)
+                  && vTaskGroups.at(iGroup).size() < vTaskGroups.at(iBestGroup).size())
+               iBestGroup = iGroup;
+         }
+
+         vTaskGroups.at(iBestGroup).push_back(vSortedShards.at(i));
+         vTaskGroupBytes.at(iBestGroup) += vSortedShards.at(i).ullSizeBytes;
+      }
+   }
+
+   vector<string> vRunEachInputMgfPaths;
+   vector<unsigned long long> vRunEachInputMgfBytes;
+   vRunEachInputMgfPaths.reserve(vTaskGroups.size());
+   vRunEachInputMgfBytes.reserve(vTaskGroups.size());
+   for (size_t iGroup = 0; iGroup < vTaskGroups.size(); ++iGroup)
+   {
+      const vector<RunEachSourceShard>& vGroup = vTaskGroups.at(iGroup);
+      if (vGroup.empty())
+      {
+         string strErrorMsg = " Error - internal run-comet-each grouping produced an empty MGF task.\n";
+         logerr(strErrorMsg);
+         exit(1);
+      }
+
+      if (vGroup.size() == 1)
+      {
+         vRunEachInputMgfPaths.push_back(vGroup.at(0).sInputMgfPath);
+         vRunEachInputMgfBytes.push_back(vTaskGroupBytes.at(iGroup));
+      }
+      else
+      {
+         vector<std::pair<string, string>> vMergeInputs;
+         vMergeInputs.reserve(vGroup.size());
+         for (size_t iShard = 0; iShard < vGroup.size(); ++iShard)
+            vMergeInputs.push_back(std::make_pair(vGroup.at(iShard).sInputMgfPath, ""));
+
+         string sMergedTaskMgfPath;
+         string sMergeMgfError;
+         if (!MergeFilteredMgfFilesWithSourceTag(vMergeInputs, sMergedTaskMgfPath, sMergeMgfError))
+         {
+            logerr(sMergeMgfError);
+            exit(1);
+         }
+         vTempArtifacts.push_back(sMergedTaskMgfPath);
+         vRunEachInputMgfPaths.push_back(sMergedTaskMgfPath);
+         vRunEachInputMgfBytes.push_back(vTaskGroupBytes.at(iGroup));
+
+         char szGroupMergeLog[2048];
+         snprintf(szGroupMergeLog,
+                  sizeof(szGroupMergeLog),
+                  " [%s] run-comet-each grouped merge: group=%zu, source_shards=%zu, bytes=%llu -> \"%s\"\n",
+                  GetLocalTimestampString().c_str(),
+                  iGroup + 1,
+                  vGroup.size(),
+                  vTaskGroupBytes.at(iGroup),
+                  sMergedTaskMgfPath.c_str());
+         logout(szGroupMergeLog);
+      }
+   }
+
+   const size_t tNumTasks = vRunEachInputMgfPaths.size();
+   int iMaxParallelJobs = (int)tNumTasks;
+   if (iMaxParallelJobs < 1)
+      iMaxParallelJobs = 1;
+
+   vector<int> vTaskThreads(tNumTasks, 1);
+   int iBaseTaskThreads = iRunCometEachTotalThreads / (int)tNumTasks;
+   int iExtraThreadTasks = iRunCometEachTotalThreads % (int)tNumTasks;
+   if (iBaseTaskThreads < 1)
+   {
+      iBaseTaskThreads = 1;
+      iExtraThreadTasks = 0;
+   }
+
+   vector<size_t> vTaskOrder;
+   vTaskOrder.reserve(tNumTasks);
+   for (size_t i = 0; i < tNumTasks; ++i)
+      vTaskOrder.push_back(i);
+
+   std::sort(vTaskOrder.begin(),
+             vTaskOrder.end(),
+             [&](size_t a, size_t b)
+             {
+                if (vRunEachInputMgfBytes.at(a) != vRunEachInputMgfBytes.at(b))
+                   return vRunEachInputMgfBytes.at(a) > vRunEachInputMgfBytes.at(b);
+                return a < b;
+             });
+
+   int iThreadAssignedSum = 0;
+   int iMinTaskThreads = INT_MAX;
+   int iMaxTaskThreads = 0;
+   for (size_t iOrder = 0; iOrder < vTaskOrder.size(); ++iOrder)
+   {
+      size_t iTask = vTaskOrder.at(iOrder);
+      int iTaskThreads = iBaseTaskThreads;
+      if ((int)iOrder < iExtraThreadTasks)
+         ++iTaskThreads;
+      if (iTaskThreads < 1)
+         iTaskThreads = 1;
+
+      vTaskThreads.at(iTask) = iTaskThreads;
+      iThreadAssignedSum += iTaskThreads;
+      if (iTaskThreads < iMinTaskThreads)
+         iMinTaskThreads = iTaskThreads;
+      if (iTaskThreads > iMaxTaskThreads)
+         iMaxTaskThreads = iTaskThreads;
+   }
+
+   vector<RunEachTask> vTasks(tNumTasks);
+   for (size_t i = 0; i < tNumTasks; ++i)
+   {
+      vTasks.at(i).sInputMgfPath = vRunEachInputMgfPaths.at(i);
+      vTasks.at(i).iTaskThreads = vTaskThreads.at(i);
+
+      string sTempMarkerPath;
+      string sErrorMsg;
+      if (!CreateTempPath("cometplus_run_each_shard", "", sTempMarkerPath, sErrorMsg))
+      {
+         logerr(sErrorMsg);
+         exit(1);
+      }
+      vTempArtifacts.push_back(sTempMarkerPath);
+
+      string sShardBaseName = ComputeInputBaseName(sTempMarkerPath);
+      if (sShardBaseName.empty())
+      {
+         string strErrorMsg = " Error - failed to derive shard output basename for --run-comet-each.\n";
+         logerr(strErrorMsg);
+         exit(1);
+      }
+      vTasks.at(i).sShardBaseName = sShardBaseName;
+      vTasks.at(i).sShardPinPath = JoinPathLocal(novelOpts.sOutputFolder,
+                                                 sShardBaseName + sOutputSuffix + ".pin");
+      vTempArtifacts.push_back(vTasks.at(i).sShardPinPath);
+   }
+
+   char szRunEachStart[1024];
+   snprintf(szRunEachStart,
+            sizeof(szRunEachStart),
+            " [%s] run-comet-each: source_shards=%zu, grouped_tasks=%zu, total_threads=%d, assigned_threads=%d, task_threads=[%d,%d], max_parallel_jobs=%d\n",
+            GetLocalTimestampString().c_str(),
+            tSourceShardCount,
+            tNumTasks,
+            iRunCometEachTotalThreads,
+            iThreadAssignedSum,
+            iMinTaskThreads == INT_MAX ? 0 : iMinTaskThreads,
+            iMaxTaskThreads,
+            iMaxParallelJobs);
+   logout(szRunEachStart);
+
+   auto tRunEachStart = std::chrono::steady_clock::now();
+   std::atomic<size_t> iNextTask(0);
+   std::atomic<bool> bRunEachError(false);
+   std::mutex mRunEachError;
+   string sFirstRunEachError;
+   vector<std::thread> vWorkers;
+   vWorkers.reserve((size_t)iMaxParallelJobs);
+   for (int iWorker = 0; iWorker < iMaxParallelJobs; ++iWorker)
+   {
+      vWorkers.emplace_back([&]()
+      {
+         while (true)
+         {
+            size_t iTask = iNextTask.fetch_add(1);
+            if (iTask >= tNumTasks)
+               break;
+
+            if (bRunEachError.load())
+               break;
+
+            RunEachTask& task = vTasks.at(iTask);
+            vector<string> vCmdArgs;
+            vCmdArgs.push_back(g_sCometPlusExecutablePath);
+            vCmdArgs.push_back("--params");
+            vCmdArgs.push_back(sParamsFile);
+            for (size_t iOverride = 0; iOverride < vCliParamOverrides.size(); ++iOverride)
+            {
+               vCmdArgs.push_back("--" + vCliParamOverrides.at(iOverride).sName);
+               vCmdArgs.push_back(vCliParamOverrides.at(iOverride).sValue);
+            }
+            vCmdArgs.push_back("--thread");
+            vCmdArgs.push_back(std::to_string(task.iTaskThreads));
+            vCmdArgs.push_back("--output-folder");
+            vCmdArgs.push_back(novelOpts.sOutputFolder);
+            vCmdArgs.push_back("--name");
+            vCmdArgs.push_back(task.sShardBaseName);
+            vCmdArgs.push_back("--output_percolatorfile");
+            vCmdArgs.push_back("1");
+            vCmdArgs.push_back("--output_sqtfile");
+            vCmdArgs.push_back("0");
+            vCmdArgs.push_back("--output_txtfile");
+            vCmdArgs.push_back("0");
+            vCmdArgs.push_back("--output_pepxmlfile");
+            vCmdArgs.push_back("0");
+            vCmdArgs.push_back("--output_mzidentmlfile");
+            vCmdArgs.push_back("0");
+            vCmdArgs.push_back("--cometplus-novel-output-only");
+
+            for (size_t iDb = 0; iDb < vFinalDatabases.size(); ++iDb)
+            {
+               vCmdArgs.push_back("--database");
+               vCmdArgs.push_back(vFinalDatabases.at(iDb));
+            }
+
+            vCmdArgs.push_back(task.sInputMgfPath);
+
+            string sCmdError;
+            if (!RunExternalCommand(vCmdArgs, sCmdError))
+            {
+               task.bSuccess = false;
+               task.sErrorMsg = " Error - --run-comet-each task search failed for input \"" + task.sInputMgfPath + "\".\n" + sCmdError;
+               bRunEachError.store(true);
+               std::lock_guard<std::mutex> lk(mRunEachError);
+               if (sFirstRunEachError.empty())
+                  sFirstRunEachError = task.sErrorMsg;
+               continue;
+            }
+
+            task.bSuccess = true;
+         }
+      });
+   }
+
+   for (size_t i = 0; i < vWorkers.size(); ++i)
+      vWorkers.at(i).join();
+
+   if (bRunEachError.load())
+   {
+      if (sFirstRunEachError.empty())
+         sFirstRunEachError = " Error - --run-comet-each task search failed.\n";
+      logerr(sFirstRunEachError);
+      exit(1);
+   }
+
+   vector<string> vShardPinFiles;
+   vShardPinFiles.reserve(vTasks.size());
+   for (size_t i = 0; i < vTasks.size(); ++i)
+      vShardPinFiles.push_back(vTasks.at(i).sShardPinPath);
+
+   string sMergedPinPath = sNovelMergedOutputBase + sOutputSuffix + ".pin";
+   string sMergeError;
+   if (!MergePercolatorPinFiles(vShardPinFiles, sMergedPinPath, sMergeError))
+   {
+      logerr(sMergeError);
+      exit(1);
+   }
+
+   char szRunEachDone[2048];
+   snprintf(szRunEachDone,
+            sizeof(szRunEachDone),
+            " [%s] run-comet-each pin merge: %zu task pin files -> \"%s\"\n",
+            GetLocalTimestampString().c_str(),
+            vShardPinFiles.size(),
+            sMergedPinPath.c_str());
+   logout(szRunEachDone);
+
+   LogStageTiming("run-comet-each", tRunEachStart, tProgramStart);
+
+   for (size_t i = 0; i < pvInputFiles.size(); ++i)
+   {
+      delete pvInputFiles.at(i);
+      pvInputFiles.at(i) = NULL;
+   }
+   pvInputFiles.clear();
+
+   bSearchAlreadyRun = true;
+   bSearchSucceeded = true;
 } // ProcessCmdLine

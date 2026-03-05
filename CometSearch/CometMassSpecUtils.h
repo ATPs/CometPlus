@@ -57,9 +57,10 @@ public:
                                     vector<string>& vProteinTargets,  // the target protein names
                                     vector<string>& vProteinDecoys);  // the decoy protein names if applicable
    // In cometplus_novel_output_only mode:
-   // - no printable novel target PSM => false
-   // - all printable target PSM novel-only => true
+   // - no printable novel PSM => false
+   // - all printable PSM novel-only => true
    // - mixed printable novel+known => true only when the best-Xcorr tie group is novel-only
+   // Printable PSMs include target-side hits and decoy-side hits when decoy_search=2.
    static bool QueryHasNovelTargetResult(FILE *fpdb,
                                          int iWhichQuery);
 

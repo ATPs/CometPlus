@@ -35,7 +35,9 @@ void ProcessCmdLine(int argc,
                     std::vector<InputFileInfo*> &pvInputFiles,
                     ICometSearchManager *pSearchMgr,
                     string &sMergedDatabasePath,
-                    std::vector<string> &vTempArtifacts);
+                    std::vector<string> &vTempArtifacts,
+                    bool &bSearchAlreadyRun,
+                    bool &bSearchSucceeded);
 void PrintParams(int iPrintParams);
 bool ValidateInputFile(char *pszInputFileName);
 bool ParseCmdLine(char *cmd, InputFileInfo *pInputFile, ICometSearchManager *pSearchMgr);
