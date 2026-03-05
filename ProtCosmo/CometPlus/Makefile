@@ -27,13 +27,13 @@ else
 endif
 
 EXECNAME = cometplus
-WORKER_EXECNAME = cometplus_prefilter_worker
 OBJDIR = obj
 OBJS = $(OBJDIR)/CometPlus.o
 OBJS += $(OBJDIR)/NovelModeUtils.o
 OBJS += $(OBJDIR)/NovelModeUtilsMerge.o
 OBJS += $(OBJDIR)/NovelModeUtilsIdx.o
 OBJS += $(OBJDIR)/NovelModeUtilsPrefilter.o
+OBJS += $(OBJDIR)/PrefilterWorker.o
 OBJS += $(OBJDIR)/CometPlusInputFiles.o
 OBJS += $(OBJDIR)/CometPlusProcessCmd.o
 OBJS += $(OBJDIR)/CometPlusRuntimeUtils.o
@@ -42,11 +42,6 @@ OBJS += $(OBJDIR)/CometPlusPrefilterWorkflow.o
 OBJS += $(OBJDIR)/CometPlusPrintParams.o
 OBJS += $(OBJDIR)/CometPlusParamHelp.o
 OBJS += $(OBJDIR)/CometPlusParamParser.o
-WORKER_OBJS = $(OBJDIR)/PrefilterWorker.o
-WORKER_OBJS += $(OBJDIR)/NovelModeUtils.o
-WORKER_OBJS += $(OBJDIR)/NovelModeUtilsMerge.o
-WORKER_OBJS += $(OBJDIR)/NovelModeUtilsIdx.o
-WORKER_OBJS += $(OBJDIR)/NovelModeUtilsPrefilter.o
 DEPS_STAMP = $(OBJDIR)/.deps_built
 
 LIBPATHS = -L$(ROOT)/$(MSTOOLKIT) -L$(ROOT)/CometSearch -L$(ROOT)/$(ASCOREPRO)
@@ -73,11 +68,10 @@ endif
 
 ifeq ($(STATIC),1)
    OBJS += $(OBJDIR)/StaticCompat.o
-   WORKER_OBJS += $(OBJDIR)/StaticCompat.o
    LDFLAGS += -static
 endif
 
-all: $(EXECNAME) $(WORKER_EXECNAME)
+all: $(EXECNAME)
 
 static:
 	$(MAKE) STATIC=1 all
@@ -96,13 +90,6 @@ ifeq ($(UNAME_S),Darwin)
 	${CXX} $(OBJS) -headerpad_max_install_names -o ${EXECNAME} $(LDFLAGS) $(CXXFLAGS) $(LIBPATHS) $(LIBS)
 else
 	${CXX} $(OBJS) -o ${EXECNAME} $(LDFLAGS) $(CXXFLAGS) $(LIBPATHS) $(LIBS)
-endif
-
-$(WORKER_EXECNAME): $(WORKER_OBJS) $(DEPS_STAMP)
-ifeq ($(UNAME_S),Darwin)
-	${CXX} $(WORKER_OBJS) -headerpad_max_install_names -o ${WORKER_EXECNAME} $(LDFLAGS) $(CXXFLAGS) $(LIBPATHS) $(LIBS)
-else
-	${CXX} $(WORKER_OBJS) -o ${WORKER_EXECNAME} $(LDFLAGS) $(CXXFLAGS) $(LIBPATHS) $(LIBS)
 endif
 
 $(OBJDIR):
@@ -154,4 +141,4 @@ $(OBJDIR)/StaticCompat.o: CometPlus/StaticCompat.cpp | $(OBJDIR)
 	${CC} -O2 -c CometPlus/StaticCompat.cpp -o $@
 
 clean:
-	rm -rf $(OBJDIR) $(EXECNAME) $(WORKER_EXECNAME)
+	rm -rf $(OBJDIR) $(EXECNAME) cometplus_prefilter_worker

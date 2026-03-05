@@ -34,7 +34,6 @@ make -C ProtCosmo/CometPlus
 ```
 Produces:
 - `ProtCosmo/CometPlus/cometplus`
-- `ProtCosmo/CometPlus/cometplus_prefilter_worker`
 
 ### 2) Static build (no mzMLb/HDF5 requirement)
 ```bash
@@ -126,17 +125,14 @@ For `WITH_MZMLB=1` (mzMLb enabled), the same command should show `H5...` symbols
   - temporary file is removed automatically at normal completion and handled error exits.
 - `ms2.gz` is not supported in this milestone.
 
-## mzMLb Prefilter Worker
+## mzMLb Prefilter Worker Mode
 
-- CometPlus uses a separate worker executable for mzMLb process-parallel prefilter:
-  - `ProtCosmo/CometPlus/cometplus_prefilter_worker`
-- Worker path resolution order:
-  1. `COMETPLUS_PREFILTER_WORKER` (if set)
-  2. sibling executable next to `cometplus`
-  3. `PATH` lookup for `cometplus_prefilter_worker`
+- CometPlus uses its own executable as the worker for mzMLb process-parallel prefilter.
+- Parent process spawns child jobs as:
+  - `cometplus --job <job.tsv>`
 - Worker help:
 ```bash
-./ProtCosmo/CometPlus/cometplus_prefilter_worker --help
+./ProtCosmo/CometPlus/cometplus --job /tmp/cometplus_prefilter_job.tsv --help
 ```
 
 ## Usage

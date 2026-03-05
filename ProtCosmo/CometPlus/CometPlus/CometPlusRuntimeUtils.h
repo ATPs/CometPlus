@@ -42,9 +42,6 @@ bool IsMzMLbPath(const string& sPath);
 bool HasMzMLbInputs(const std::vector<InputFileInfo*>& vInputs);
 bool IsExecutableFileLocal(const string& sPath);
 bool FindExecutableOnPath(const string& sExeName, string& sOutPath);
-bool ResolvePrefilterWorkerExecutablePath(const string& sMainExePath,
-                                          string& sOutPath,
-                                          string& sErrorMsg);
 bool RunExternalCommand(const std::vector<string>& vArgs,
                         string& sErrorMsg);
 bool MergePercolatorPinFiles(const std::vector<string>& vShardPinFiles,

@@ -14,6 +14,7 @@
 
 
 #include "CometPlusApp.h"
+#include "CometPlusPrefilterWorkerMode.h"
 #include "CometPlusRuntimeUtils.h"
 #include "CometData.h"
 #include "CometDataInternal.h"
@@ -63,6 +64,9 @@ static string ResolveExecutablePathLocal(const char* pszArgv0)
 int main(int argc, char *argv[])
 {
    g_sCometPlusExecutablePath = ResolveExecutablePathLocal(argv[0]);
+
+   if (HasPrefilterWorkerJobArg(argc, argv))
+      return RunPrefilterWorkerMode(argc, argv);
 
    // add git hash to version string if present
    if (strlen(GITHUBSHA) > 0)
@@ -166,7 +170,7 @@ void Usage(char *pszCmd,
    logout("                 --stop-after-saving-novel-peptide stop after writing internal novel peptide TSV\n");
    logout("                 --run-comet-each     novel multi-input peptide-.idx mode: grouped-MGF child cometplus search + merged pin\n");
    logout("                 --keep-tmp            keep temporary artifacts on exit for debugging\n");
-   logout("                 env COMETPLUS_PREFILTER_WORKER can override worker path for mzMLb process-prefilter\n");
+   logout("                 --job <job.tsv>       prefilter worker mode (internal; executes one job file)\n");
    logout("                 --scan <file>          scan filter file; delimiters: comma/space/tab/newline\n");
    logout("                 --scan_numbers <list>  explicit scan list, e.g. 1001,1002,1003\n");
    logout("                 note: --input_files and positional <input_files> are mutually exclusive\n");
@@ -322,6 +326,14 @@ void Usage(char *pszCmd,
       logout("      fallback: if prerequisites are not met, a warning is logged and normal merged-MGF single-search workflow is used\n");
       logout("   --keep-tmp\n");
       logout("      keep temporary artifacts instead of deleting them at exit\n");
+      logout("   --job <job.tsv>\n");
+      logout("      prefilter worker mode: execute one prefilter job file and write its result TSV\n");
+      logout("      accepted forms: --job <path> or --job=<path>\n");
+      logout("      in this mode only --job and --help/-h are accepted options\n");
+      logout("      job format: TAB-separated key/value lines (<key>\\t<value>)\n");
+      logout("      required keys include result_file, input_file, temp_dir, analysis_type, first_scan, last_scan,\n");
+      logout("      use_explicit_scans/explicit_scans_file, use_novel_mass_filter/novel_masses_file/mass_offsets_file,\n");
+      logout("      and ctx_* numeric prefilter context fields; result file writes success/temp_mgf_path/num_scans_kept/error\n");
 
       logout("\n");
    }

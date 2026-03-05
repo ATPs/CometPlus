@@ -6,10 +6,9 @@ This guide documents how to build `cometplus` reproducibly in this environment, 
 
 For normal CometPlus delivery in this project, the required target is:
 
-- both binaries are **static**
-  - `ProtCosmo/CometPlus/cometplus`
-  - `ProtCosmo/CometPlus/cometplus_prefilter_worker`
-- both binaries are built with **mzMLb support enabled** (`WITH_MZMLB=1`)
+- `ProtCosmo/CometPlus/cometplus` is **static**
+- binary is built with **mzMLb support enabled** (`WITH_MZMLB=1`)
+- process-parallel prefilter uses internal worker mode: `cometplus --job <job.tsv>`
 
 Treat `WITH_MZMLB=0` as a fallback/debug profile only.
 
@@ -28,9 +27,8 @@ make -C MSToolkit clean
 make -C ProtCosmo/CometPlus clean
 make -C ProtCosmo/CometPlus static WITH_MZMLB=1 HDF5_DIR="$HDF5_DIR"
 
-file ProtCosmo/CometPlus/cometplus ProtCosmo/CometPlus/cometplus_prefilter_worker
+file ProtCosmo/CometPlus/cometplus
 ldd ProtCosmo/CometPlus/cometplus || true
-ldd ProtCosmo/CometPlus/cometplus_prefilter_worker || true
 ```
 
 ### Optional Debug Path: `WITH_MZMLB=0` (no mzMLb)
@@ -43,9 +41,8 @@ make -C MSToolkit clean
 make -C ProtCosmo/CometPlus clean
 make -C ProtCosmo/CometPlus static WITH_MZMLB=0
 
-file ProtCosmo/CometPlus/cometplus ProtCosmo/CometPlus/cometplus_prefilter_worker
+file ProtCosmo/CometPlus/cometplus
 ldd ProtCosmo/CometPlus/cometplus
-ldd ProtCosmo/CometPlus/cometplus_prefilter_worker
 ```
 
 ### Most Common Build Mistake
@@ -57,7 +54,6 @@ When switching between `WITH_MZMLB=0` and `WITH_MZMLB=1`, always run `make -C MS
 - Repository root: `/data/p/comet/Comet`
 - Binary targets:
   - `/data/p/comet/Comet/ProtCosmo/CometPlus/cometplus`
-  - `/data/p/comet/Comet/ProtCosmo/CometPlus/cometplus_prefilter_worker`
 - Static build target: `ldd` prints `not a dynamic executable`
 - Profiles covered:
   - `WITH_MZMLB=0` (no mzMLb support, no HDF5 linkage)
@@ -250,16 +246,14 @@ Note:
 Verify:
 
 ```bash
-file ProtCosmo/CometPlus/cometplus ProtCosmo/CometPlus/cometplus_prefilter_worker
+file ProtCosmo/CometPlus/cometplus
 ldd ProtCosmo/CometPlus/cometplus
-ldd ProtCosmo/CometPlus/cometplus_prefilter_worker
 nm -A ProtCosmo/CometPlus/cometplus 2>/dev/null | rg -i "\\bH5[A-Za-z0-9_]*\\b|hdf5"
-nm -A ProtCosmo/CometPlus/cometplus_prefilter_worker 2>/dev/null | rg -i "\\bH5[A-Za-z0-9_]*\\b|hdf5"
 ```
 
 Expected:
 
-- both binaries are static (`statically linked`, `not a dynamic executable`)
+- binary is static (`statically linked`, `not a dynamic executable`)
 - no `H5`/`hdf5` symbols
 
 ## Build CometPlus: Static With mzMLb (`WITH_MZMLB=1`)
@@ -290,19 +284,17 @@ make -C ProtCosmo/CometPlus static \
 Verify:
 
 ```bash
-ls -lh ProtCosmo/CometPlus/cometplus ProtCosmo/CometPlus/cometplus_prefilter_worker
-file ProtCosmo/CometPlus/cometplus ProtCosmo/CometPlus/cometplus_prefilter_worker
+ls -lh ProtCosmo/CometPlus/cometplus
+file ProtCosmo/CometPlus/cometplus
 ldd ProtCosmo/CometPlus/cometplus || true
-ldd ProtCosmo/CometPlus/cometplus_prefilter_worker || true
 nm -A ProtCosmo/CometPlus/cometplus 2>/dev/null | rg -i "\\bH5[A-Za-z0-9_]*\\b|hdf5" | head
-nm -A ProtCosmo/CometPlus/cometplus_prefilter_worker 2>/dev/null | rg -i "\\bH5[A-Za-z0-9_]*\\b|hdf5" | head
 strings ProtCosmo/CometPlus/cometplus | rg -n "mzMLb|Supported input formats include"
 ```
 
 Expected:
 
-- both binaries are static (`statically linked`, `not a dynamic executable`)
-- `H5...` symbols present in binaries when `WITH_MZMLB=1`
+- binary is static (`statically linked`, `not a dynamic executable`)
+- `H5...` symbols present when `WITH_MZMLB=1`
 - `mzMLb` appears in strings/help text
 - typical size increase vs dynamic build in this environment: dynamic ~`8.7M`, static ~`16M`
 

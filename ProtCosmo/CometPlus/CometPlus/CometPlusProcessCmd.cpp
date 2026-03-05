@@ -951,7 +951,7 @@ void ProcessCmdLine(int argc,
    }
 
    const size_t tSourceShardCount = vSourceShards.size();
-   int iTargetTaskCount = iRunCometEachTotalThreads / 4;
+   int iTargetTaskCount = iRunCometEachTotalThreads / 2;
    if (iTargetTaskCount < 1)
       iTargetTaskCount = 1;
    if ((size_t)iTargetTaskCount > tSourceShardCount)

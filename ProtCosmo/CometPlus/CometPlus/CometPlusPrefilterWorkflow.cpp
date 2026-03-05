@@ -134,11 +134,10 @@ void PrepareInputFilesWithPrefilter(vector<InputFileInfo*>& vParsedInputs,
 
    if (bUseProcessPrefilter)
    {
-      if (!ResolvePrefilterWorkerExecutablePath(g_sCometPlusExecutablePath,
-                                                sPrefilterWorkerExePath,
-                                                sErrorMsg))
+      sPrefilterWorkerExePath = g_sCometPlusExecutablePath;
+      if (sPrefilterWorkerExePath.empty())
       {
-         logerr(sErrorMsg);
+         logerr(" Error - unable to resolve cometplus executable path for process-parallel prefilter worker mode.\n");
          exit(1);
       }
 
@@ -181,7 +180,7 @@ void PrepareInputFilesWithPrefilter(vector<InputFileInfo*>& vParsedInputs,
       char szWarnBuf[1024];
       snprintf(szWarnBuf,
                sizeof(szWarnBuf),
-               " [%s] mzMLb input detected: using process-parallel prefilter workers=%d (worker=\"%s\").\n",
+               " [%s] mzMLb input detected: using process-parallel prefilter workers=%d (worker_mode=--job, executable=\"%s\").\n",
                GetLocalTimestampString().c_str(),
                iPrefilterThreads,
                sPrefilterWorkerExePath.c_str());

@@ -20,7 +20,6 @@ make -C ProtCosmo/CometPlus
 ```
 Produces:
 - `ProtCosmo/CometPlus/cometplus`
-- `ProtCosmo/CometPlus/cometplus_prefilter_worker`
 
 ### Show CometPlus help
 ```bash
@@ -51,7 +50,7 @@ CometPlus now includes:
   - `--keep-tmp`
 - Gzip spectrum input support: `.mzXML.gz`, `.mzML.gz`, `.mgf.gz`.
 - `mzMLb` input support (when built with `WITH_MZMLB=1` and static HDF5 C/C++ libs).
-- mzMLb process-parallel prefilter worker; worker path can be overridden via `COMETPLUS_PREFILTER_WORKER`.
+- mzMLb process-parallel prefilter worker mode using the same executable (`cometplus --job <job.tsv>`).
 
 ## CometPlus Input / Database Support
 

@@ -14,6 +14,7 @@
 
 #include "Common.h"
 #include "CometData.h"
+#include "CometPlusPrefilterWorkerMode.h"
 #include "NovelModeUtils.h"
 #include <climits>
 #include <cerrno>
@@ -31,14 +32,14 @@ static void PrintUsage(const char* pszCmd)
 {
    const char* pszProg = (pszCmd != NULL && *pszCmd != '\0')
       ? pszCmd
-      : "cometplus_prefilter_worker";
+      : "cometplus";
 
    fprintf(stdout, "\n");
    fprintf(stdout, "CometPlus prefilter worker\n");
    fprintf(stdout, "\n");
    fprintf(stdout, "Purpose:\n");
    fprintf(stdout, "  Execute one spectrum prefilter job and write a machine-readable result file.\n");
-   fprintf(stdout, "  This binary is normally launched by cometplus for mzMLb process-parallel prefilter.\n");
+   fprintf(stdout, "  This mode is normally launched by cometplus for mzMLb process-parallel prefilter.\n");
    fprintf(stdout, "\n");
    fprintf(stdout, "Usage:\n");
    fprintf(stdout, "  %s --job <job.tsv>\n", pszProg);
@@ -263,7 +264,23 @@ static int ExitWithResult(const string& sResultPath,
    return iCode;
 }
 
-int main(int argc, char* argv[])
+bool HasPrefilterWorkerJobArg(int argc, char* argv[])
+{
+   for (int i = 1; i < argc; ++i)
+   {
+      const char* pszArg = argv[i];
+      if (pszArg == NULL)
+         continue;
+
+      string sArg = pszArg;
+      if (sArg == "--job" || sArg.rfind("--job=", 0) == 0)
+         return true;
+   }
+
+   return false;
+}
+
+int RunPrefilterWorkerMode(int argc, char* argv[])
 {
    string sJobPath;
 

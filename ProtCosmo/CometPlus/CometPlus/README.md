@@ -15,7 +15,7 @@ This directory contains the CometPlus application entrypoints, novel-mode orches
 - `CometPlusNovelWorkflow.h`: declarations for novel workflow orchestration.
 - `CometPlusPrefilterWorkflow.cpp`: prefilter orchestration before search; chooses direct prefilter vs worker-based path and converts filtered spectra to temporary MGF inputs.
 - `CometPlusPrefilterWorkflow.h`: declarations for prefilter workflow orchestration.
-- `PrefilterWorker.cpp`: standalone worker executable (`cometplus_prefilter_worker`) that executes one prefilter job file and emits a result file.
+- `PrefilterWorker.cpp`: prefilter worker-mode implementation (`cometplus --job`) that executes one prefilter job file and emits a result file.
 - `NovelModeUtils.cpp`: shared novel-mode utilities (temporary path handling, FASTA merge/write helpers, peptide normalization, scan/novel input parsing helpers).
 - `NovelModeUtils.h`: novel-mode data structures and utility declarations used by both main app and worker paths.
 - `NovelModeUtilsIdx.cpp`: index-focused utilities (idx parsing and index-generation support via Comet subprocess).
