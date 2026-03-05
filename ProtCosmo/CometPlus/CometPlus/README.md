@@ -7,6 +7,8 @@ This directory contains the CometPlus application entrypoints, novel-mode orches
 - `CometPlus.cpp`: main executable entrypoint; initializes Comet, parses top-level CLI inputs, and delegates workflow execution.
 - `CometPlusApp.h`: shared application-level declarations (global flags, CLI/wiring function declarations) used across split modules.
 - `CometPlusProcessCmd.cpp`: command-line processing and run setup (input expansion, output planning, option validation, and mode selection).
+- `CometPlusInputFiles.cpp`: dedicated `--input_files` list parsing/validation module (BOM trim, comment/blank filtering, and mutual-exclusion checks).
+- `CometPlusInputFiles.h`: declarations for `--input_files` list resolution helpers used by command-line processing.
 - `CometPlusRuntimeUtils.cpp`: runtime helpers for timing logs, path normalization, temp/job/result files, and prefilter worker process invocation.
 - `CometPlusRuntimeUtils.h`: declarations for runtime helper utilities shared by workflow modules.
 - `CometPlusNovelWorkflow.cpp`: high-level novel-mode orchestration (known extraction, novel assembly/subtraction, merged DB/scoring prep, mass list generation).
@@ -27,7 +29,7 @@ This directory contains the CometPlus application entrypoints, novel-mode orches
 
 ## Quick Navigation
 
-- CLI and run wiring: `CometPlus.cpp`, `CometPlusApp.h`, `CometPlusProcessCmd.cpp`
+- CLI and run wiring: `CometPlus.cpp`, `CometPlusApp.h`, `CometPlusProcessCmd.cpp`, `CometPlusInputFiles.*`
 - Novel workflow: `CometPlusNovelWorkflow.*`, `NovelModeUtils*`
 - Prefilter workflow: `CometPlusPrefilterWorkflow.*`, `NovelModeUtilsPrefilter.cpp`, `PrefilterWorker.cpp`
 - Params/help: `CometPlusParams.h`, `CometPlusParamParser.cpp`, `CometPlusParamHelp.cpp`, `CometPlusPrintParams.cpp`

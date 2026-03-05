@@ -33,6 +33,7 @@ Produces:
 CometPlus now includes:
 - Repeatable `--database` with multi-FASTA or multi-`.idx` search in one invocation.
 - Multiple input spectrum files in one invocation.
+- `--input_files <list_file>` for large spectrum input lists (one path per line).
 - Generic CLI override for normal Comet params: `--<param_key> <value>` / `--<param_key>=<value>`.
 - Dedicated overrides for common keys:
   - `database_name` -> `--database`
@@ -116,6 +117,23 @@ Notes:
   /path/to/input.mgf
 ```
 
+### Large input list via `--input_files`
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/db1.idx \
+  --database /path/to/db2.idx \
+  --input_files /path/to/input_list.txt
+```
+
+`--input_files` rules:
+- one spectrum input path per line
+- empty lines and lines whose first non-space character is `#` are ignored
+- relative paths are resolved from current working directory
+- cannot be combined with positional spectrum inputs
+- cannot be passed more than once
+- list file with no valid input paths is rejected
+
 ## Novel + Scan Workflow
 
 Novel/scan options:
@@ -183,6 +201,7 @@ High-level behavior in novel mode:
 ```
 
 Important constraints:
+- `--input_files` cannot be combined with positional spectrum inputs and cannot be repeated.
 - `--novel_*`, `--scan*`, and internal-novel export options cannot be used with `-i` or `-j`.
 - Novel mode requires known DB from `--database` or `database_name` in params.
 - At least one spectrum input is required for novel/scan mode, except stop-after mode.

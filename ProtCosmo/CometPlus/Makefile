@@ -34,6 +34,7 @@ OBJS += $(OBJDIR)/NovelModeUtils.o
 OBJS += $(OBJDIR)/NovelModeUtilsMerge.o
 OBJS += $(OBJDIR)/NovelModeUtilsIdx.o
 OBJS += $(OBJDIR)/NovelModeUtilsPrefilter.o
+OBJS += $(OBJDIR)/CometPlusInputFiles.o
 OBJS += $(OBJDIR)/CometPlusProcessCmd.o
 OBJS += $(OBJDIR)/CometPlusRuntimeUtils.o
 OBJS += $(OBJDIR)/CometPlusNovelWorkflow.o
@@ -121,6 +122,9 @@ $(OBJDIR)/NovelModeUtilsIdx.o: CometPlus/NovelModeUtilsIdx.cpp | $(OBJDIR)
 
 $(OBJDIR)/NovelModeUtilsPrefilter.o: CometPlus/NovelModeUtilsPrefilter.cpp | $(OBJDIR)
 	${CXX} ${CXXFLAGS} CometPlus/NovelModeUtilsPrefilter.cpp -c -o $@
+
+$(OBJDIR)/CometPlusInputFiles.o: CometPlus/CometPlusInputFiles.cpp | $(OBJDIR)
+	${CXX} ${CXXFLAGS} CometPlus/CometPlusInputFiles.cpp -c -o $@
 
 $(OBJDIR)/CometPlusProcessCmd.o: CometPlus/CometPlusProcessCmd.cpp | $(OBJDIR)
 	${CXX} ${CXXFLAGS} CometPlus/CometPlusProcessCmd.cpp -c -o $@

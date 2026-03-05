@@ -153,6 +153,7 @@ void Usage(char *pszCmd,
    logout("                 -q         to print out a comet.params.new file with more parameter entries\n");
    logout("                 -P<params> to specify an alternate parameters file (default comet.params)\n");
    logout("                 --params <params>      alias for -P<params>\n");
+   logout("                 --input_files <file>   read input paths from text file (one path per line)\n");
    logout("                 -N<name>   to specify an alternate output base name; valid for one input, or merged multi-input novel mode\n");
    logout("                 --name <name>          alias for -N<name>\n");
    logout("                 -D<dbase>  to specify a sequence database, overriding entry in parameters file\n");
@@ -168,6 +169,8 @@ void Usage(char *pszCmd,
    logout("                 env COMETPLUS_PREFILTER_WORKER can override worker path for mzMLb process-prefilter\n");
    logout("                 --scan <file>          scan filter file; delimiters: comma/space/tab/newline\n");
    logout("                 --scan_numbers <list>  explicit scan list, e.g. 1001,1002,1003\n");
+   logout("                 note: --input_files and positional <input_files> are mutually exclusive\n");
+   logout("                       --input_files skips empty lines and lines whose first non-space char is '#'\n");
    logout("                 note: novel mode requires known DB via --database or params database_name\n");
    logout("                 --thread <num>         override num_threads parameter\n");
    logout("                 -F<num>    to specify the first/start scan to search, overriding entry in parameters file\n");
@@ -189,6 +192,8 @@ void Usage(char *pszCmd,
    snprintf(szTmp, iSize, "            or   %s --database db1.fasta --database db2.fasta file1.mzML\n", pszCmd);
    logout(szTmp);
    snprintf(szTmp, iSize, "            or   %s --database db.fasta file1.mzML.gz\n", pszCmd);
+   logout(szTmp);
+   snprintf(szTmp, iSize, "            or   %s --input_files input_list.txt --database db.fasta\n", pszCmd);
    logout(szTmp);
    snprintf(szTmp, iSize, "            or   %s --database known.fasta --novel_peptide novel.txt --scan_numbers 1001,1002 file1.mzML\n", pszCmd);
    logout(szTmp);
@@ -276,6 +281,10 @@ void Usage(char *pszCmd,
       logout("      repeatable; provide one or more known DBs (all FASTA or all .idx, not mixed)\n");
       logout("   --thread <n>\n");
       logout("      override num_threads for this run\n");
+      logout("   --input_files <file>\n");
+      logout("      read spectrum inputs from a text file, one path per line\n");
+      logout("      skips empty lines and lines whose first non-space character is '#'\n");
+      logout("      mutually exclusive with positional <input_files>; cannot be repeated\n");
       logout("   --first-scan <n>, --last-scan <n>\n");
       logout("      scan-range gate; can be used independently or together as a closed range\n");
       logout("   --output-folder <dir>\n");

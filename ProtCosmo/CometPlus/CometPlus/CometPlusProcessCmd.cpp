@@ -16,6 +16,7 @@
 #include "CometPlusMultiDB.h"
 #include "CometPlusParams.h"
 #include "CometPlusNovelWorkflow.h"
+#include "CometPlusInputFiles.h"
 #include "CometPlusPrefilterWorkflow.h"
 #include "CometPlusRuntimeUtils.h"
 #include "NovelModeUtils.h"
@@ -72,11 +73,13 @@ void ProcessCmdLine(int argc,
    bool bOutputFolderSpecified = false;
    bool bRunCometEachRequested = false;
    bool bForceNovelOutputOnly = false;
+   bool bInputFilesOptionSeen = false;
    int iFirstScan = 0;
    int iLastScan = 0;
    int iBatchSize = 0;
    int iThreadOverride = 0;
    string sOutputName;
+   string sInputFilesPath;
    string sResolvedOutputInternalNovelPath;
    vector<string> vDatabases;
    vector<string> vInputArgs;
@@ -152,6 +155,18 @@ void ProcessCmdLine(int argc,
          else if (sName == "params")
          {
             sParamsFile = RequireValue(sName);
+         }
+         else if (sName == "input_files")
+         {
+            if (bInputFilesOptionSeen)
+            {
+               string strErrorMsg = " Error - option --input_files cannot be provided more than once.\n";
+               logerr(strErrorMsg);
+               exit(1);
+            }
+
+            sInputFilesPath = RequireValue(sName);
+            bInputFilesOptionSeen = true;
          }
          else if (sName == "name")
          {
@@ -326,6 +341,16 @@ void ProcessCmdLine(int argc,
    {
       PrintParams(iPrintParams);
       exit(0);
+   }
+
+   string sInputFilesError;
+   if (!ResolveInputArgsFromInputFilesOption(bInputFilesOptionSeen,
+                                             sInputFilesPath,
+                                             vInputArgs,
+                                             sInputFilesError))
+   {
+      logerr(sInputFilesError);
+      exit(1);
    }
 
    strncpy(szParamsFile, sParamsFile.c_str(), SIZE_FILE - 1);

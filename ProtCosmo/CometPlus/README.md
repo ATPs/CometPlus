@@ -209,9 +209,27 @@ Examples:
   /path/to/input.mgf
 ```
 
+### Large input list via `--input_files`
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/db1.idx \
+  --database /path/to/db2.idx \
+  --input_files /path/to/input_list.txt
+```
+
+`--input_files` rules:
+- one spectrum input path per line
+- empty lines and lines whose first non-space character is `#` are ignored
+- relative paths are resolved from current working directory
+- cannot be combined with positional spectrum inputs
+- cannot be passed more than once
+- list file with no valid input paths is rejected
+
 ## Novel Inputs and Scan Subset Options
 
 This section documents design and usage for:
+- `--input_files <file>`
 - `--novel_protein <file>`
 - `--novel_peptide <file>`
 - `--scan <file>`
@@ -290,6 +308,14 @@ These options are implemented as additive orchestration in CometPlus and preserv
 - `--scan_numbers <list>`
   - Inline explicit scan list, for example: `1001,1002,1003`.
 
+- `--input_files <file>`
+  - Read spectrum input paths from a text file, one path per line.
+  - Empty lines and lines whose first non-space character is `#` are ignored.
+  - Relative paths are resolved from the current working directory.
+  - Mutually exclusive with positional `<input_files>`.
+  - Option cannot be repeated.
+  - File must contain at least one valid input path after filtering.
+
 ### End-to-End Design Behavior
 
 When any novel option or explicit scan option is used, CometPlus runs this flow:
@@ -345,6 +371,9 @@ When any novel option or explicit scan option is used, CometPlus runs this flow:
 
 ### Input Validation and Error Conditions
 
+- `--input_files` cannot be combined with positional spectrum inputs.
+- `--input_files` cannot be passed more than once.
+- `--input_files` file must be readable and contain at least one valid input path.
 - Scan tokens must be positive integers (`1..INT_MAX`); malformed or out-of-range tokens fail fast.
 - `--novel_peptide` with no parsed peptide entries fails fast.
 - `--novel_protein/--novel_peptide/--scan/--scan_numbers` (and internal TSV export) cannot be used with index-creation modes `-i` or `-j`.

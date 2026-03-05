@@ -32,3 +32,4 @@ need to add to PATH: /data/p/bin/
 
 ## major development folder
 most changes should happen in folder `ProtCosmo/`
+check this file [build.md](ProtCosmo/CometPlus/build.md) Always build static mzMLb enabled binary for cometplus.

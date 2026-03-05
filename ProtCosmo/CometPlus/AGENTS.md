@@ -119,4 +119,5 @@ At minimum before handing off:
 8. Defer remaining gzip-expansion work (`.ms2.gz`, broader strategy) unless explicitly reopened.
 
 # build cometplus
-check this file [build.md](ProtCosmo/CometPlus/build.md) 
+check this file [build.md](ProtCosmo/CometPlus/build.md) Always build static mzMLb enabled binary.
+
