@@ -29,3 +29,6 @@ Linux/macOS builds rely on C++14 and the bundled library subprojects. Windows bu
 python path: /data/p/anaconda3/bin/python
 anaconda base folder: /data/p/anaconda3
 need to add to PATH: /data/p/bin/
+
+## major development folder
+most changes should happen in folder `ProtCosmo/`

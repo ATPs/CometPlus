@@ -32,6 +32,9 @@ Reproducible static build notes and validation commands are documented in:
 ```bash
 make -C ProtCosmo/CometPlus
 ```
+Produces:
+- `ProtCosmo/CometPlus/cometplus`
+- `ProtCosmo/CometPlus/cometplus_prefilter_worker`
 
 ### 2) Static build (no mzMLb/HDF5 requirement)
 ```bash
@@ -41,6 +44,7 @@ make -C ProtCosmo/CometPlus static WITH_MZMLB=0
 
 ### 3) Static build with mzMLb enabled
 ```bash
+make -C MSToolkit clean
 make -C ProtCosmo/CometPlus clean
 make -C ProtCosmo/CometPlus static \
   WITH_MZMLB=1 \
@@ -55,6 +59,8 @@ make -C ProtCosmo/CometPlus static \
   HDF5_LIB_C=/abs/path/to/hdf5-static-cxx/lib/libhdf5.a \
   HDF5_LIB_CPP=/abs/path/to/hdf5-static-cxx/lib/libhdf5_cpp.a
 ```
+
+When switching between `WITH_MZMLB=0` and `WITH_MZMLB=1`, run `make -C MSToolkit clean` first to avoid stale objects.
 
 ## HDF5 Prerequisite for mzMLb
 
@@ -119,6 +125,19 @@ For `WITH_MZMLB=1` (mzMLb enabled), the same command should show `H5...` symbols
   - the original input path remains the original `.gz` path for reporting/metadata,
   - temporary file is removed automatically at normal completion and handled error exits.
 - `ms2.gz` is not supported in this milestone.
+
+## mzMLb Prefilter Worker
+
+- CometPlus uses a separate worker executable for mzMLb process-parallel prefilter:
+  - `ProtCosmo/CometPlus/cometplus_prefilter_worker`
+- Worker path resolution order:
+  1. `COMETPLUS_PREFILTER_WORKER` (if set)
+  2. sibling executable next to `cometplus`
+  3. `PATH` lookup for `cometplus_prefilter_worker`
+- Worker help:
+```bash
+./ProtCosmo/CometPlus/cometplus_prefilter_worker --help
+```
 
 ## Usage
 
@@ -437,7 +456,6 @@ Reuse internal novel TSV and run search directly:
 ### Related Design Docs
 
 - `ProtCosmo/CometPlus/design.novel_protein_peptide.md`
-- `ProtCosmo/CometPlus/design.multiple.input.db.md`
 
 ## Troubleshooting
 
@@ -453,13 +471,11 @@ Reuse internal novel TSV and run search directly:
 - Mixed database types error:
   use all FASTA paths or all `.idx` paths in one invocation; do not mix them.
 
-## Reproducible Parity Workflow
+## Additional Docs In This Repo
 
-A full all-scan parity harness for `mzML` vs `mzMLb` vs `mgf` is available at:
-- `ProtCosmo/CometPlus/test_mzmlb/run_mzmlb_comparison.py`
-
-Study design and artifact documentation:
-- `ProtCosmo/CometPlus/test_mzmlb/README.md`
+- `ProtCosmo/CometPlus/build.md`
+- `ProtCosmo/CometPlus/design.novel_protein_peptide.md`
+- `ProtCosmo/CometPlus/plan.novel_protein_peptide.md`
 
 ## Terminology
 
