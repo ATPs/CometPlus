@@ -2,7 +2,7 @@
 
 ProtCosmo is a toolkit folder for proteogenomics research, focused on finding novel peptides from MS/MS data.
 
-check [ProtCosmo](/ATPs/ProtCosmo) page.
+check [ProtCosmo](https://github.com/ATPs/ProtCosmo) page.
 
 Here is tools that will be used by ProtCosmo
 
