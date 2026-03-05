@@ -2,10 +2,14 @@
 
 ProtCosmo is a toolkit folder for proteogenomics research, focused on finding novel peptides from MS/MS data.
 
+check [ProtCosmo](/ATPs/ProtCosmo) page.
+
+Here is tools that will be used by ProtCosmo
+
 ## Main Components
 
-- `CometPlus/`: a CLI layer on top of CometSearch for search workflows, including repeated `--database`, novel peptide/protein inputs, and scan-subset options.
-- `pyComet/`: Python utilities for Comet-related file processing, including PIN/percolator conversion, UniMod matching, and peptide index table generation.
+- [CometPlus/](CometPlus/): a CLI layer on top of CometSearch for search workflows, including repeated `--database`, novel peptide/protein inputs, and scan-subset options.
+- [pyComet/](pyComet/): Python utilities for Comet-related file processing, including PIN/percolator conversion, UniMod matching, and peptide index table generation.
 
 ## Typical Workflow
 
