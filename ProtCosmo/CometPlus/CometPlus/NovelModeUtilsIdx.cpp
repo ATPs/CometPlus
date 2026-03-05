@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <unordered_map>
 #include <unordered_set>
 
 extern comet_fileoffset_t clSizeCometFileOffset;
@@ -63,7 +64,9 @@ bool ParsePeptideIdxEntries(const string& sIdxPath,
    vector<vector<string>> vProteinSets;
    if (bLoadProteinIds)
    {
-      if (lProteinsPos <= 0 || comet_fseek(fp, lProteinsPos, SEEK_SET) != 0)
+      if (lProteinsPos <= 0
+            || lEndOfStruct <= lProteinsPos
+            || comet_fseek(fp, lProteinsPos, SEEK_SET) != 0)
       {
          fclose(fp);
          sErrorMsg = " Error - invalid peptide index protein section in \"" + sIdxPath + "\".\n";
@@ -78,7 +81,26 @@ bool ParsePeptideIdxEntries(const string& sIdxPath,
          return false;
       }
 
-      vProteinSets.resize(tNumSets);
+      comet_fileoffset_t lProteinSetBytes = lEndOfStruct - lProteinsPos;
+      if (lProteinSetBytes < (comet_fileoffset_t)clSizeCometFileOffset)
+      {
+         fclose(fp);
+         sErrorMsg = " Error - invalid protein-set section size in \"" + sIdxPath + "\".\n";
+         return false;
+      }
+
+      size_t tMaxSetsByBytes = (size_t)(lProteinSetBytes / clSizeCometFileOffset);
+      if (tNumSets > tMaxSetsByBytes)
+      {
+         fclose(fp);
+         sErrorMsg = " Error - unreasonable protein-set count while parsing \"" + sIdxPath + "\".\n";
+         return false;
+      }
+
+      vector<vector<comet_fileoffset_t>> vOffsetSets;
+      vOffsetSets.resize(tNumSets);
+      unordered_set<comet_fileoffset_t> setUniqueOffsets;
+
       for (size_t iSet = 0; iSet < tNumSets; ++iSet)
       {
          size_t tSetSize = 0;
@@ -89,9 +111,26 @@ bool ParsePeptideIdxEntries(const string& sIdxPath,
             return false;
          }
 
-         vector<comet_fileoffset_t> vOffsets;
+         comet_fileoffset_t lAfterSetSize = comet_ftell(fp);
+         if (lAfterSetSize < 0)
+         {
+            fclose(fp);
+            sErrorMsg = " Error - failed tracking protein-set position in \"" + sIdxPath + "\".\n";
+            return false;
+         }
+
+         comet_fileoffset_t lBytesRemaining = lEndOfStruct - lAfterSetSize;
+         if (lBytesRemaining < 0
+               || (comet_fileoffset_t)tSetSize > lBytesRemaining / clSizeCometFileOffset)
+         {
+            fclose(fp);
+            sErrorMsg = " Error - invalid protein-set size while parsing \"" + sIdxPath + "\".\n";
+            return false;
+         }
+
+         vector<comet_fileoffset_t>& vOffsets = vOffsetSets[iSet];
          vOffsets.resize(tSetSize);
-         for (size_t i = 0; i < tSetSize; ++i)
+         for (size_t i = 0; i < vOffsets.size(); ++i)
          {
             if (fread(&vOffsets[i], clSizeCometFileOffset, 1, fp) != 1)
             {
@@ -99,28 +138,56 @@ bool ParsePeptideIdxEntries(const string& sIdxPath,
                sErrorMsg = " Error - failed reading protein offset from \"" + sIdxPath + "\".\n";
                return false;
             }
+
+            if (vOffsets[i] < 0 || vOffsets[i] >= lProteinsPos)
+            {
+               fclose(fp);
+               sErrorMsg = " Error - invalid protein offset while parsing \"" + sIdxPath + "\".\n";
+               return false;
+            }
+
+            setUniqueOffsets.insert(vOffsets[i]);
+         }
+      }
+
+      unordered_map<comet_fileoffset_t, string> mOffsetToProtein;
+      for (auto itOffset = setUniqueOffsets.begin(); itOffset != setUniqueOffsets.end(); ++itOffset)
+      {
+         if (comet_fseek(fp, *itOffset, SEEK_SET) != 0)
+         {
+            fclose(fp);
+            sErrorMsg = " Error - failed seeking protein entry in \"" + sIdxPath + "\".\n";
+            return false;
          }
 
-         unordered_set<string> setSeen;
-         for (size_t i = 0; i < vOffsets.size(); ++i)
+         char szProteinName[512];
+         if (fscanf(fp, "%500s", szProteinName) != 1)
          {
-            if (comet_fseek(fp, vOffsets[i], SEEK_SET) != 0)
+            fclose(fp);
+            sErrorMsg = " Error - failed reading protein name from \"" + sIdxPath + "\".\n";
+            return false;
+         }
+         szProteinName[500] = '\0';
+
+         string sProteinId = szProteinName;
+         mOffsetToProtein[*itOffset] = sProteinId;
+      }
+
+      vProteinSets.resize(tNumSets);
+      for (size_t iSet = 0; iSet < vOffsetSets.size(); ++iSet)
+      {
+         unordered_set<string> setSeen;
+         for (size_t i = 0; i < vOffsetSets[iSet].size(); ++i)
+         {
+            auto itName = mOffsetToProtein.find(vOffsetSets[iSet][i]);
+            if (itName == mOffsetToProtein.end())
             {
                fclose(fp);
-               sErrorMsg = " Error - failed seeking protein entry in \"" + sIdxPath + "\".\n";
+               sErrorMsg = " Error - unresolved protein offset while parsing \"" + sIdxPath + "\".\n";
                return false;
             }
 
-            char szProteinName[512];
-            if (fscanf(fp, "%500s", szProteinName) != 1)
-            {
-               fclose(fp);
-               sErrorMsg = " Error - failed reading protein name from \"" + sIdxPath + "\".\n";
-               return false;
-            }
-            szProteinName[500] = '\0';
-
-            string sProteinId = szProteinName;
+            const string& sProteinId = itName->second;
             if (!sProteinId.empty() && setSeen.insert(sProteinId).second)
                vProteinSets[iSet].push_back(sProteinId);
          }
