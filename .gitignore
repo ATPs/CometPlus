@@ -173,3 +173,4 @@ AGENTS.md
 **/AGENTS.md
 .vscode/
 tmp*/
+.git/
