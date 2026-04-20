@@ -28,9 +28,11 @@ struct NovelModeOptions
 {
    string sNovelProteinPath;
    string sNovelPeptidePath;
+   string sKnownPeptidePath;
    string sScanFilePath;
    string sScanNumbers;
    string sOutputFolder;
+   string sOutputKnownPeptidePath;
    string sOutputInternalNovelPeptidePath;
    string sInternalNovelPeptidePath;
    bool bStopAfterSavingNovelPeptide = false;
@@ -43,6 +45,16 @@ struct NovelModeOptions
    bool HasInternalNovelInput() const
    {
       return !sInternalNovelPeptidePath.empty();
+   }
+
+   bool HasKnownPeptideInput() const
+   {
+      return !sKnownPeptidePath.empty();
+   }
+
+   bool HasKnownPeptideOutput() const
+   {
+      return !sOutputKnownPeptidePath.empty();
    }
 
    bool HasNovelMode() const
@@ -121,6 +133,12 @@ bool ParseScanIntegersFromFile(const string& sPath,
                                const string& sSourceLabel);
 bool ParseNovelPeptideFile(const string& sPath,
                            vector<string>& vPeptides,
+                           string& sErrorMsg);
+bool ParseKnownPeptideFile(const string& sPath,
+                          vector<string>& vPeptides,
+                          string& sErrorMsg);
+bool WriteKnownPeptideFile(const string& sPath,
+                           const vector<string>& vPeptides,
                            string& sErrorMsg);
 bool FindNoCutEnzymeNumber(const string& sParamsFilePath,
                            int& iNoCutEnzyme,

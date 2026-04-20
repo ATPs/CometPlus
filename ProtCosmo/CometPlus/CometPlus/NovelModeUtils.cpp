@@ -573,6 +573,63 @@ bool ParseNovelPeptideFile(const string& sPath,
    return true;
 }
 
+bool ParseKnownPeptideFile(const string& sPath,
+                          vector<string>& vPeptides,
+                          string& sErrorMsg)
+{
+   std::ifstream inFile(sPath.c_str(), std::ios::in | std::ios::binary);
+   if (!inFile.good())
+   {
+      sErrorMsg = " Error - cannot read known peptide file \"" + sPath + "\".\n";
+      return false;
+   }
+
+   unordered_set<string> setSeen;
+   vPeptides.clear();
+
+   string sLine;
+   while (std::getline(inFile, sLine))
+   {
+      string sNorm = NormalizePeptideToken(TrimStringLocal(sLine));
+      if (!sNorm.empty() && setSeen.insert(sNorm).second)
+         vPeptides.push_back(sNorm);
+   }
+
+   if (vPeptides.empty())
+   {
+      sErrorMsg = " Error - no peptide entries were parsed from known peptide file \"" + sPath + "\".\n";
+      return false;
+   }
+
+   return true;
+}
+
+bool WriteKnownPeptideFile(const string& sPath,
+                           const vector<string>& vPeptides,
+                           string& sErrorMsg)
+{
+   std::ofstream outFile(sPath.c_str(), std::ios::out | std::ios::trunc);
+   if (!outFile.good())
+   {
+      sErrorMsg = " Error - cannot create known peptide file \"" + sPath + "\".\n";
+      return false;
+   }
+
+   for (size_t i = 0; i < vPeptides.size(); ++i)
+   {
+      outFile << vPeptides.at(i) << "\n";
+   }
+
+   outFile.flush();
+   if (!outFile.good())
+   {
+      sErrorMsg = " Error - failed writing known peptide file \"" + sPath + "\".\n";
+      return false;
+   }
+
+   return true;
+}
+
 static void SplitTabLine(const string& sLine, vector<string>& vFields)
 {
    vFields.clear();

@@ -33,3 +33,35 @@ This directory contains the CometPlus application entrypoints, novel-mode orches
 - Novel workflow: `CometPlusNovelWorkflow.*`, `NovelModeUtils*`
 - Prefilter workflow: `CometPlusPrefilterWorkflow.*`, `NovelModeUtilsPrefilter.cpp`, `PrefilterWorker.cpp`
 - Params/help: `CometPlusParams.h`, `CometPlusParamParser.cpp`, `CometPlusParamHelp.cpp`, `CometPlusPrintParams.cpp`
+
+## Common Examples
+
+Export known peptide cache and exit:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known.fasta \
+  --output-folder /path/to/out \
+  --output_known_peptide known.txt
+```
+
+Reuse known peptide cache during fresh novel subtraction:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known.idx \
+  --known_peptide /path/to/out/known.txt \
+  --novel_peptide /path/to/novel_peptides.txt \
+  /path/to/input.mzMLb
+```
+
+Reuse and refresh known peptide cache in one run:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known.idx \
+  --known_peptide /path/to/out/known.txt \
+  --output_known_peptide /path/to/out/known_refreshed.txt \
+  --novel_protein /path/to/novel_proteins.fasta \
+  /path/to/input.mzMLb
+```

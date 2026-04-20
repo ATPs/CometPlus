@@ -80,6 +80,7 @@ void ProcessCmdLine(int argc,
    int iThreadOverride = 0;
    string sOutputName;
    string sInputFilesPath;
+   string sResolvedOutputKnownPeptidePath;
    string sResolvedOutputInternalNovelPath;
    vector<string> vDatabases;
    vector<string> vInputArgs;
@@ -195,6 +196,14 @@ void ProcessCmdLine(int argc,
          else if (sName == "novel_peptide")
          {
             novelOpts.sNovelPeptidePath = RequireValue(sName);
+         }
+         else if (sName == "known_peptide")
+         {
+            novelOpts.sKnownPeptidePath = RequireValue(sName);
+         }
+         else if (sName == "output_known_peptide")
+         {
+            novelOpts.sOutputKnownPeptidePath = RequireValue(sName);
          }
          else if (sName == "output_internal_novel_peptide")
          {
@@ -454,6 +463,13 @@ void ProcessCmdLine(int argc,
       exit(1);
    }
 
+   if (novelOpts.HasKnownPeptideInput() && !novelOpts.HasNovelInputOptions())
+   {
+      string strErrorMsg = " Error - --known_peptide requires --novel_protein and/or --novel_peptide.\n";
+      logerr(strErrorMsg);
+      exit(1);
+   }
+
    if (novelOpts.HasInternalNovelInput() && novelOpts.HasNovelInputOptions())
    {
       string strErrorMsg = " Error - --internal_novel_peptide cannot be used together with --novel_protein or --novel_peptide.\n";
@@ -477,6 +493,7 @@ void ProcessCmdLine(int argc,
 
    if ((bCreateFragmentIndex || bCreatePeptideIndex)
          && (novelOpts.HasNovelMode() || novelOpts.HasExplicitScanFilter()
+            || novelOpts.HasKnownPeptideOutput()
             || !novelOpts.sOutputInternalNovelPeptidePath.empty()))
    {
       string strErrorMsg = " Error - novel/scan subset options cannot be used with -i or -j.\n";
@@ -497,17 +514,13 @@ void ProcessCmdLine(int argc,
    }
    SetCometPlusTempDirectory(novelOpts.sOutputFolder);
 
+   if (!novelOpts.sOutputKnownPeptidePath.empty())
+      sResolvedOutputKnownPeptidePath = ResolveInternalOutputPath(novelOpts.sOutputKnownPeptidePath,
+                                                                  novelOpts.sOutputFolder);
+
    if (!novelOpts.sOutputInternalNovelPeptidePath.empty())
       sResolvedOutputInternalNovelPath = ResolveInternalOutputPath(novelOpts.sOutputInternalNovelPeptidePath,
                                                                    novelOpts.sOutputFolder);
-
-   bool bNeedInputSpectra = !novelOpts.bStopAfterSavingNovelPeptide;
-   if ((novelOpts.HasNovelMode() || novelOpts.HasExplicitScanFilter()) && vInputArgs.empty() && bNeedInputSpectra)
-   {
-      string strErrorMsg = " Error - at least one input spectrum file is required when using novel or scan subset options.\n";
-      logerr(strErrorMsg);
-      exit(1);
-   }
 
    vector<string> vKnownDatabases = vDatabases;
    if (vKnownDatabases.empty())
@@ -518,6 +531,27 @@ void ProcessCmdLine(int argc,
       {
          vKnownDatabases.push_back(sDatabaseFromParams);
       }
+   }
+
+   if (!novelOpts.sOutputKnownPeptidePath.empty() && vKnownDatabases.empty())
+   {
+      string strErrorMsg = " Error - --output_known_peptide requires known DB via --database or database_name in params.\n";
+      logerr(strErrorMsg);
+      exit(1);
+   }
+
+   bool bStandaloneKnownPeptideExport = (!novelOpts.sOutputKnownPeptidePath.empty()
+         && !novelOpts.HasNovelMode()
+         && !novelOpts.HasExplicitScanFilter()
+         && !novelOpts.bStopAfterSavingNovelPeptide
+         && vInputArgs.empty());
+
+   bool bNeedInputSpectra = !(novelOpts.bStopAfterSavingNovelPeptide || bStandaloneKnownPeptideExport);
+   if ((novelOpts.HasNovelMode() || novelOpts.HasExplicitScanFilter()) && vInputArgs.empty() && bNeedInputSpectra)
+   {
+      string strErrorMsg = " Error - at least one input spectrum file is required when using novel or scan subset options.\n";
+      logerr(strErrorMsg);
+      exit(1);
    }
 
    bool bKnownAllIdx = true;
@@ -782,6 +816,8 @@ void ProcessCmdLine(int argc,
 
       if (!sResolvedOutputInternalNovelPath.empty())
          vPlannedOutputs.push_back(sResolvedOutputInternalNovelPath);
+      if (!sResolvedOutputKnownPeptidePath.empty())
+         vPlannedOutputs.push_back(sResolvedOutputKnownPeptidePath);
 
       unordered_map<string, vector<string>> mPathToSources;
       unordered_set<string> setExistingSeen;
@@ -841,6 +877,8 @@ void ProcessCmdLine(int argc,
                             iThreadOverride,
                             bTreatSameIL,
                             iDecoySearch,
+                            sResolvedOutputKnownPeptidePath,
+                            bStandaloneKnownPeptideExport,
                             sResolvedOutputInternalNovelPath,
                             tProgramStart,
                             vTempArtifacts,

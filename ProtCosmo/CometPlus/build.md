@@ -12,6 +12,20 @@ For normal CometPlus delivery in this project, the required target is:
 
 Treat `WITH_MZMLB=0` as a fallback/debug profile only.
 
+## Current Change Validation
+
+For the known-peptide cache feature (`--known_peptide`, `--output_known_peptide`), validation should still use the same required static mzMLb build:
+
+```bash
+cd /data/p/comet/Comet
+export PATH=/data/p/anaconda3/bin:/data/p/bin:$PATH
+make -C MSToolkit clean
+make -C ProtCosmo/CometPlus clean
+make -C ProtCosmo/CometPlus static WITH_MZMLB=1 HDF5_DIR=/data/p/hdf5/hdf5-1.14.4-3_build_native_cpp
+file ProtCosmo/CometPlus/cometplus
+ldd ProtCosmo/CometPlus/cometplus || true
+```
+
 ## Daily Quick Start (Copy/Paste)
 
 If you only need a correct build quickly, use one of these blocks.

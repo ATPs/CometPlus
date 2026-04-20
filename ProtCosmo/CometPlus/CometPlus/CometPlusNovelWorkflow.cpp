@@ -25,6 +25,7 @@
 #include <set>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 using namespace std;
 
@@ -183,6 +184,8 @@ void RunNovelWorkflowIfNeeded(const NovelModeOptions& novelOpts,
                               int iThreadOverride,
                               bool bTreatSameIL,
                               int iDecoySearch,
+                              const string& sResolvedOutputKnownPeptidePath,
+                              bool bStandaloneKnownPeptideExport,
                               const string& sResolvedOutputInternalNovelPath,
                               const std::chrono::steady_clock::time_point& tProgramStart,
                               std::vector<string>& vTempArtifacts,
@@ -191,10 +194,10 @@ void RunNovelWorkflowIfNeeded(const NovelModeOptions& novelOpts,
                               std::vector<double>& vNovelMasses,
                               string& sNovelScoringDatabase)
 {
-   if (!novelOpts.HasNovelMode())
+   if (!novelOpts.HasNovelMode() && sResolvedOutputKnownPeptidePath.empty())
       return;
 
-   if (vKnownDatabases.empty())
+   if ((novelOpts.HasNovelMode() || !sResolvedOutputKnownPeptidePath.empty()) && vKnownDatabases.empty())
    {
       string strErrorMsg = " Error - known database must be provided through --database or database_name in params when using novel options.\n";
       logerr(strErrorMsg);
@@ -227,6 +230,67 @@ void RunNovelWorkflowIfNeeded(const NovelModeOptions& novelOpts,
       return mOverrides;
    };
 
+   auto ExportKnownPeptidesAndExitIfRequested =
+      [&](const vector<string>& vKnownCanonicalPeptides)
+   {
+      if (sResolvedOutputKnownPeptidePath.empty())
+         return;
+
+      auto tStageStart = std::chrono::steady_clock::now();
+      string sOutputDir = GetDirNameLocal(sResolvedOutputKnownPeptidePath);
+      if (!sOutputDir.empty())
+      {
+         string sErrorMsg;
+         if (!EnsureDirectoryExistsRecursive(sOutputDir, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+      }
+
+      string sErrorMsg;
+      if (!WriteKnownPeptideFile(sResolvedOutputKnownPeptidePath, vKnownCanonicalPeptides, sErrorMsg))
+      {
+         logerr(sErrorMsg);
+         exit(1);
+      }
+
+      char szLogBuf[1024];
+      snprintf(szLogBuf,
+               sizeof(szLogBuf),
+               " Saved known peptide file: %s (%zu peptides)\n",
+               sResolvedOutputKnownPeptidePath.c_str(),
+               vKnownCanonicalPeptides.size());
+      logout(szLogBuf);
+      LogStageTiming("known peptide export", tStageStart, tProgramStart);
+
+      if (bStandaloneKnownPeptideExport)
+      {
+         char szStopBuf[1024];
+         snprintf(szStopBuf,
+                  sizeof(szStopBuf),
+                  " [%s] output_known_peptide completed; exiting without novel assembly, spectrum prefilter, or search.\n",
+                  GetLocalTimestampString().c_str());
+         logout(szStopBuf);
+
+         if (g_bCometPlusKeepTempFiles)
+         {
+            LogRetainedTempArtifacts(vTempArtifacts, sMergedDatabasePath);
+         }
+         else
+         {
+            for (size_t i = 0; i < vTempArtifacts.size(); ++i)
+            {
+               if (!vTempArtifacts.at(i).empty())
+                  remove(vTempArtifacts.at(i).c_str());
+            }
+            if (!sMergedDatabasePath.empty())
+               remove(sMergedDatabasePath.c_str());
+         }
+         exit(0);
+      }
+   };
+
    if (novelOpts.HasNovelInputOptions())
    {
       string sTmpNoVarModParams;
@@ -241,85 +305,110 @@ void RunNovelWorkflowIfNeeded(const NovelModeOptions& novelOpts,
          vTempArtifacts.push_back(sTmpNoVarModParams);
       }
 
-      set<string> setKnownPeptides;
+      vector<string> vKnownCanonicalPeptides;
+      unordered_set<string> setKnownPeptides;
       {
          auto tStageStart = std::chrono::steady_clock::now();
-         vector<PeptideMassEntry> vKnownEntries;
-         string sErrorMsg;
-
-         if (bKnownAllIdx)
+         if (novelOpts.HasKnownPeptideInput())
          {
-            for (size_t iDb = 0; iDb < vKnownDatabases.size(); ++iDb)
+            string sErrorMsg;
+            if (!ParseKnownPeptideFile(novelOpts.sKnownPeptidePath, vKnownCanonicalPeptides, sErrorMsg))
             {
-               const string& sDb = vKnownDatabases.at(iDb);
+               logerr(sErrorMsg);
+               exit(1);
+            }
+            LogStageTiming("known peptide import", tStageStart, tProgramStart);
+         }
+         else
+         {
+            vector<PeptideMassEntry> vKnownEntries;
+            string sErrorMsg;
 
-               int iType = 0;
-               string sProbeError;
-               if (!CometPlusProbeIdxType(sDb, iType, sProbeError))
+            if (bKnownAllIdx)
+            {
+               for (size_t iDb = 0; iDb < vKnownDatabases.size(); ++iDb)
                {
-                  logerr(sProbeError);
+                  const string& sDb = vKnownDatabases.at(iDb);
+
+                  int iType = 0;
+                  string sProbeError;
+                  if (!CometPlusProbeIdxType(sDb, iType, sProbeError))
+                  {
+                     logerr(sProbeError);
+                     exit(1);
+                  }
+
+                  vector<PeptideMassEntry> vEntries;
+                  bool bOk = false;
+                  if (iType == 1)
+                     bOk = ParseFragmentIdxEntries(sDb, vEntries, sErrorMsg);
+                  else if (iType == 2)
+                     bOk = ParsePeptideIdxEntries(sDb, vEntries, false, sErrorMsg);
+                  else
+                  {
+                     sErrorMsg = " Error - unknown .idx type encountered while parsing known database.\n";
+                     bOk = false;
+                  }
+
+                  if (!bOk)
+                  {
+                     logerr(sErrorMsg);
+                     exit(1);
+                  }
+
+                  vKnownEntries.insert(vKnownEntries.end(), vEntries.begin(), vEntries.end());
+               }
+            }
+            else
+            {
+               string sTmpKnownFasta;
+               if (!BuildMergedFasta(vKnownDatabases, sTmpKnownFasta, sErrorMsg))
+               {
+                  logerr(sErrorMsg);
                   exit(1);
                }
+               vTempArtifacts.push_back(sTmpKnownFasta);
 
-               vector<PeptideMassEntry> vEntries;
-               bool bOk = false;
-               if (iType == 1)
-                  bOk = ParseFragmentIdxEntries(sDb, vEntries, sErrorMsg);
-               else if (iType == 2)
-                  bOk = ParsePeptideIdxEntries(sDb, vEntries, false, sErrorMsg);
-               else
-               {
-                  sErrorMsg = " Error - unknown .idx type encountered while parsing known database.\n";
-                  bOk = false;
-               }
-
-               if (!bOk)
+               if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath,
+                                               sTmpNoVarModParams,
+                                               sTmpKnownFasta,
+                                               false,
+                                               iThreadOverride,
+                                               sErrorMsg))
                {
                   logerr(sErrorMsg);
                   exit(1);
                }
 
-               vKnownEntries.insert(vKnownEntries.end(), vEntries.begin(), vEntries.end());
-            }
-         }
-         else
-         {
-            string sTmpKnownFasta;
-            if (!BuildMergedFasta(vKnownDatabases, sTmpKnownFasta, sErrorMsg))
-            {
-               logerr(sErrorMsg);
-               exit(1);
-            }
-            vTempArtifacts.push_back(sTmpKnownFasta);
-
-            if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath,
-                                            sTmpNoVarModParams,
-                                            sTmpKnownFasta,
-                                            false,
-                                            iThreadOverride,
-                                            sErrorMsg))
-            {
-               logerr(sErrorMsg);
-               exit(1);
+               string sTmpKnownIdx = sTmpKnownFasta + ".idx";
+               vTempArtifacts.push_back(sTmpKnownIdx);
+               if (!ParsePeptideIdxEntries(sTmpKnownIdx, vKnownEntries, false, sErrorMsg))
+               {
+                  logerr(sErrorMsg);
+                  exit(1);
+               }
             }
 
-            string sTmpKnownIdx = sTmpKnownFasta + ".idx";
-            vTempArtifacts.push_back(sTmpKnownIdx);
-            if (!ParsePeptideIdxEntries(sTmpKnownIdx, vKnownEntries, false, sErrorMsg))
+            unordered_set<string> setKnownCanonicalSeen;
+            for (size_t i = 0; i < vKnownEntries.size(); ++i)
             {
-               logerr(sErrorMsg);
-               exit(1);
+               string sCanonical = NormalizePeptideToken(vKnownEntries.at(i).sPeptide);
+               if (!sCanonical.empty() && setKnownCanonicalSeen.insert(sCanonical).second)
+                  vKnownCanonicalPeptides.push_back(sCanonical);
             }
+
+            std::sort(vKnownCanonicalPeptides.begin(), vKnownCanonicalPeptides.end());
+            LogStageTiming("known peptide extraction", tStageStart, tProgramStart);
          }
 
-         for (size_t i = 0; i < vKnownEntries.size(); ++i)
+         for (size_t i = 0; i < vKnownCanonicalPeptides.size(); ++i)
          {
-            string sKey = NormalizePeptideForCompare(vKnownEntries.at(i).sPeptide, bTreatSameIL);
+            string sKey = NormalizePeptideForCompare(vKnownCanonicalPeptides.at(i), bTreatSameIL);
             if (!sKey.empty())
                setKnownPeptides.insert(sKey);
          }
 
-         LogStageTiming("known peptide extraction", tStageStart, tProgramStart);
+         ExportKnownPeptidesAndExitIfRequested(vKnownCanonicalPeptides);
       }
 
       struct NovelCandidateAggregate
@@ -467,6 +556,105 @@ void RunNovelWorkflowIfNeeded(const NovelModeOptions& novelOpts,
 
          LogStageTiming("novel candidate subtraction", tStageStart, tProgramStart);
       }
+   }
+   else if (!sResolvedOutputKnownPeptidePath.empty())
+   {
+      string sTmpNoVarModParams;
+      {
+         string sErrorMsg;
+         map<string, string> mNoVarOverrides = BuildNoVarModOverrides();
+         if (!BuildTemporaryParamsFile(sParamsFile, mNoVarOverrides, sTmpNoVarModParams, sErrorMsg))
+         {
+            logerr(sErrorMsg);
+            exit(1);
+         }
+         vTempArtifacts.push_back(sTmpNoVarModParams);
+      }
+
+      vector<string> vKnownCanonicalPeptides;
+      {
+         auto tStageStart = std::chrono::steady_clock::now();
+         vector<PeptideMassEntry> vKnownEntries;
+         string sErrorMsg;
+
+         if (bKnownAllIdx)
+         {
+            for (size_t iDb = 0; iDb < vKnownDatabases.size(); ++iDb)
+            {
+               const string& sDb = vKnownDatabases.at(iDb);
+
+               int iType = 0;
+               string sProbeError;
+               if (!CometPlusProbeIdxType(sDb, iType, sProbeError))
+               {
+                  logerr(sProbeError);
+                  exit(1);
+               }
+
+               vector<PeptideMassEntry> vEntries;
+               bool bOk = false;
+               if (iType == 1)
+                  bOk = ParseFragmentIdxEntries(sDb, vEntries, sErrorMsg);
+               else if (iType == 2)
+                  bOk = ParsePeptideIdxEntries(sDb, vEntries, false, sErrorMsg);
+               else
+               {
+                  sErrorMsg = " Error - unknown .idx type encountered while parsing known database.\n";
+                  bOk = false;
+               }
+
+               if (!bOk)
+               {
+                  logerr(sErrorMsg);
+                  exit(1);
+               }
+
+               vKnownEntries.insert(vKnownEntries.end(), vEntries.begin(), vEntries.end());
+            }
+         }
+         else
+         {
+            string sTmpKnownFasta;
+            if (!BuildMergedFasta(vKnownDatabases, sTmpKnownFasta, sErrorMsg))
+            {
+               logerr(sErrorMsg);
+               exit(1);
+            }
+            vTempArtifacts.push_back(sTmpKnownFasta);
+
+            if (!RunCometForIndexGeneration(g_sCometPlusExecutablePath,
+                                            sTmpNoVarModParams,
+                                            sTmpKnownFasta,
+                                            false,
+                                            iThreadOverride,
+                                            sErrorMsg))
+            {
+               logerr(sErrorMsg);
+               exit(1);
+            }
+
+            string sTmpKnownIdx = sTmpKnownFasta + ".idx";
+            vTempArtifacts.push_back(sTmpKnownIdx);
+            if (!ParsePeptideIdxEntries(sTmpKnownIdx, vKnownEntries, false, sErrorMsg))
+            {
+               logerr(sErrorMsg);
+               exit(1);
+            }
+         }
+
+         unordered_set<string> setKnownCanonicalSeen;
+         for (size_t i = 0; i < vKnownEntries.size(); ++i)
+         {
+            string sCanonical = NormalizePeptideToken(vKnownEntries.at(i).sPeptide);
+            if (!sCanonical.empty() && setKnownCanonicalSeen.insert(sCanonical).second)
+               vKnownCanonicalPeptides.push_back(sCanonical);
+         }
+         std::sort(vKnownCanonicalPeptides.begin(), vKnownCanonicalPeptides.end());
+
+         LogStageTiming("known peptide extraction", tStageStart, tProgramStart);
+      }
+
+      ExportKnownPeptidesAndExitIfRequested(vKnownCanonicalPeptides);
    }
    vector<double> vImportedPrecomputedMasses;
    bool bImportedHasDetailedMzColumns = false;

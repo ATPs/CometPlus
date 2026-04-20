@@ -165,6 +165,8 @@ void Usage(char *pszCmd,
    logout("                 --output-folder <dir>  output directory (default: current directory)\n");
    logout("                 --novel_protein <file> novel protein FASTA; digested using Comet settings\n");
    logout("                 --novel_peptide <file> novel peptide input (FASTA or tokenized text)\n");
+   logout("                 --known_peptide <file> reuse cached known peptide list for novel subtraction; database is still required for search\n");
+   logout("                 --output_known_peptide <file> write known peptide cache (one normalized peptide per line); can be used alone to export then exit\n");
    logout("                 --output_internal_novel_peptide <file> write detailed internal novel peptide TSV\n");
    logout("                 --internal_novel_peptide <file> reuse internal novel peptide TSV input\n");
    logout("                 --stop-after-saving-novel-peptide stop after writing internal novel peptide TSV\n");
@@ -175,7 +177,7 @@ void Usage(char *pszCmd,
    logout("                 --scan_numbers <list>  explicit scan list, e.g. 1001,1002,1003\n");
    logout("                 note: --input_files and positional <input_files> are mutually exclusive\n");
    logout("                       --input_files skips empty lines and lines whose first non-space char is '#'\n");
-   logout("                 note: novel mode requires known DB via --database or params database_name\n");
+   logout("                 note: novel mode requires known DB via --database or params database_name; --known_peptide accelerates subtraction only\n");
    logout("                 --thread <num>         override num_threads parameter\n");
    logout("                 -F<num>    to specify the first/start scan to search, overriding entry in parameters file\n");
    logout("                 --first-scan <num>     alias for -F<num>\n");
@@ -184,7 +186,7 @@ void Usage(char *pszCmd,
    logout("                            (-F/-L can be set independently; together define a closed range)\n");
    logout("                 -i         create .idx file for fragment ion indexing\n");
    logout("                 -j         create .idx file for peptide indexing\n");
-   logout("                 note: --novel_* and --scan* options are not supported with -i/-j\n");
+   logout("                 note: --novel_*, --known_peptide, --output_known_peptide, and --scan* options are not supported with -i/-j\n");
    logout("                 --help-full           print complete CLI parameter-override help\n");
    logout("\n");
    snprintf(szTmp, iSize, "       example:  %s file1.mzXML file2.mzXML\n", pszCmd);
@@ -202,6 +204,12 @@ void Usage(char *pszCmd,
    snprintf(szTmp, iSize, "            or   %s --database known.fasta --novel_peptide novel.txt --scan_numbers 1001,1002 file1.mzML\n", pszCmd);
    logout(szTmp);
    snprintf(szTmp, iSize, "            or   %s --database known.fasta --novel_protein novel.fasta --scan scan_ids.txt file1.mzML\n", pszCmd);
+   logout(szTmp);
+   snprintf(szTmp, iSize, "            or   %s --database known.fasta --output_known_peptide known.txt\n", pszCmd);
+   logout(szTmp);
+   snprintf(szTmp, iSize, "            or   %s --database known.fasta --known_peptide known.txt --novel_peptide novel.txt file1.mzML\n", pszCmd);
+   logout(szTmp);
+   snprintf(szTmp, iSize, "            or   %s --database known.fasta --known_peptide known.txt --output_known_peptide refreshed_known.txt --novel_protein novel.fasta file1.mzML\n", pszCmd);
    logout(szTmp);
 
    logout("\n");

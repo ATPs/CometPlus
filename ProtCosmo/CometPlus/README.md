@@ -228,6 +228,8 @@ This section documents design and usage for:
 - `--input_files <file>`
 - `--novel_protein <file>`
 - `--novel_peptide <file>`
+- `--known_peptide <file>`
+- `--output_known_peptide <file>`
 - `--scan <file>`
 - `--scan_numbers <list>`
 - `--output-folder <dir>`
@@ -251,6 +253,21 @@ These options are implemented as additive orchestration in CometPlus and preserv
   - FASTA mode is auto-detected if any non-empty trimmed line begins with `>`.
   - Tokenized mode accepts delimiters: comma, space, tab, newline.
   - In mixed mode (`--novel_protein` + `--novel_peptide`), both sources share one deduplicated candidate map before subtraction.
+
+- `--known_peptide <file>`
+  - Reuses a cached known peptide list for novel subtraction.
+  - File format is one normalized peptide per line; blank lines are ignored.
+  - Input is normalized with the same peptide-token normalization as other peptide text inputs.
+  - `equal_I_and_L` is still applied at runtime during subtraction, so the same cache can be reused with either setting.
+  - This option accelerates subtraction only; known DB is still required for actual search.
+  - Requires at least one of `--novel_protein` / `--novel_peptide`.
+
+- `--output_known_peptide <file>`
+  - Writes the effective known peptide universe as one normalized peptide per line.
+  - If `<file>` contains no directory component, file is created under `--output-folder`.
+  - If `<file>` includes a directory path, missing directories are created recursively.
+  - Can be used in a standalone export run with only known DB input; in that mode, CometPlus exports then exits before novel assembly, prefilter, and search.
+  - If combined with `--known_peptide`, exported content reflects the effective canonical set used by that run.
 
 - `--output-folder <dir>`
   - Default: current directory (`.`).
@@ -325,9 +342,12 @@ When any novel option or explicit scan option is used, CometPlus runs this flow:
 4. Build novel candidates:
    - from `--novel_protein` digestion and/or `--novel_peptide` parsing, then merge and deduplicate by normalized peptide identity,
    - or load from `--internal_novel_peptide` and skip subtraction (detailed TSV can also provide precomputed masses).
-5. Parse known peptide universe for subtraction when using fresh novel inputs:
+5. Build effective known peptide universe:
+   - `--known_peptide`: import cached normalized peptide list and skip DB extraction for subtraction,
    - known `.idx`: read directly, no rebuild and no mutation.
    - known FASTA: temporary peptide index generation is used for extraction.
+   - `--output_known_peptide`: optionally export the effective canonical known peptide list, one peptide per line.
+   - standalone `--output_known_peptide` mode exits after export.
 6. Normalize peptide identity for subtraction using `equal_I_and_L`:
    - `equal_I_and_L=1`: `I` and `L` are equivalent.
    - `equal_I_and_L=0`: `I` and `L` are distinct.
@@ -372,9 +392,11 @@ When any novel option or explicit scan option is used, CometPlus runs this flow:
 - `--input_files` file must be readable and contain at least one valid input path.
 - Scan tokens must be positive integers (`1..INT_MAX`); malformed or out-of-range tokens fail fast.
 - `--novel_peptide` with no parsed peptide entries fails fast.
-- `--novel_protein/--novel_peptide/--scan/--scan_numbers` (and internal TSV export) cannot be used with index-creation modes `-i` or `-j`.
+- `--novel_protein/--novel_peptide/--known_peptide/--output_known_peptide/--scan/--scan_numbers` (and internal TSV export) cannot be used with index-creation modes `-i` or `-j`.
 - Novel mode requires a known database source (`--database` or `database_name` in params).
 - At least one spectrum input file is required for novel/scan-subset runs, except `--stop-after-saving-novel-peptide`.
+- `--known_peptide` requires `--novel_protein` and/or `--novel_peptide`.
+- `--output_known_peptide` requires a known database source and may be used without spectra only in standalone export mode.
 - `--output_internal_novel_peptide` requires `--novel_protein` and/or `--novel_peptide`.
 - `--internal_novel_peptide` cannot be combined with `--novel_protein` or `--novel_peptide`.
 - `--stop-after-saving-novel-peptide` requires `--output_internal_novel_peptide`.
@@ -413,6 +435,36 @@ Novel peptide text with explicit scan subset:
   --novel_peptide /path/to/novel_peptides.txt \
   --scan_numbers 2104,2456,3001 \
   /path/to/input.mzML.gz
+```
+
+Export known peptide cache and exit:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known.fasta \
+  --output-folder /path/to/out \
+  --output_known_peptide known.txt
+```
+
+Reuse known peptide cache for faster novel subtraction:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known.idx \
+  --known_peptide /path/to/out/known.txt \
+  --novel_peptide /path/to/novel_peptides.txt \
+  /path/to/input.mzMLb
+```
+
+Reuse and refresh known peptide cache in one run:
+```bash
+./ProtCosmo/CometPlus/cometplus \
+  --params /path/to/comet.params \
+  --database /path/to/known.idx \
+  --known_peptide /path/to/out/known.txt \
+  --output_known_peptide /path/to/out/known_refreshed.txt \
+  --novel_protein /path/to/novel_proteins.fasta \
+  /path/to/input.mzMLb
 ```
 
 Combined novel protein + novel peptide + dual scan sources:

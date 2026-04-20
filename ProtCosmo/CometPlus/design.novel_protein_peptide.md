@@ -1,18 +1,20 @@
 # CometPlus Novel Protein/Peptide Design (Detailed)
 
 ## 1. Scope and Added Options
-CometPlus adds ten options in this design scope:
+CometPlus adds twelve options in this design scope:
 
 1. `--novel_protein <file>`
 2. `--novel_peptide <file>`
-3. `--scan <file>`
-4. `--scan_numbers <list>`
-5. `--output-folder <dir>`
-6. `--output_internal_novel_peptide <file_internal_novel_peptide>`
-7. `--internal_novel_peptide <file_internal_novel_peptide>`
-8. `--stop-after-saving-novel-peptide`
-9. `--keep-tmp`
-10. `--run-comet-each`
+3. `--known_peptide <file>`
+4. `--output_known_peptide <file_known_peptide>`
+5. `--scan <file>`
+6. `--scan_numbers <list>`
+7. `--output-folder <dir>`
+8. `--output_internal_novel_peptide <file_internal_novel_peptide>`
+9. `--internal_novel_peptide <file_internal_novel_peptide>`
+10. `--stop-after-saving-novel-peptide`
+11. `--keep-tmp`
+12. `--run-comet-each`
 
 Goal:
 
@@ -26,6 +28,8 @@ Goal:
 |---|---|---|---|
 | `--novel_protein` | FASTA | digested using current Comet params | No |
 | `--novel_peptide` | FASTA or tokenized text | auto-detect FASTA by `>` line; otherwise token parser | No |
+| `--known_peptide` | text file | one normalized peptide per line; reuse subtraction cache | No |
+| `--output_known_peptide` | output file path | write normalized known peptide cache; no-dir path resolves to output-folder | No |
 | `--scan` | text file of scan integers | delimiters: comma or any whitespace | No |
 | `--scan_numbers` | inline scan list | same integer parser as `--scan` | No |
 | `--output-folder` | directory path | output root; created recursively if missing | Yes |
@@ -48,12 +52,13 @@ Hard constraints:
 4. Known DB inputs must be all FASTA or all `.idx`.
 5. If known DB is `.idx`, all `.idx` must be same index type.
 6. `--output_internal_novel_peptide` requires at least one of `--novel_protein` / `--novel_peptide`.
-7. `--internal_novel_peptide` is mutually exclusive with `--novel_protein` and `--novel_peptide`.
-8. `--stop-after-saving-novel-peptide` requires `--output_internal_novel_peptide`.
-9. If `--name` and `--output-folder` are both set, `--name` must not contain path separators.
-10. `--name` with multiple spectrum inputs is allowed only in merged multi-input novel mode (`novelMode && input_count > 1`); otherwise it remains single-input only.
-11. `--run-comet-each` is effective only when all of the following are true: novel mode, multi-input spectra, known DBs are all `.idx`, and `.idx` type is peptide index (`-j`); otherwise warning + fallback to merged-MGF single-search path.
-12. Spectrum input can be omitted only in stop-after mode.
+7. `--known_peptide` requires at least one of `--novel_protein` / `--novel_peptide`.
+8. `--internal_novel_peptide` is mutually exclusive with `--novel_protein` and `--novel_peptide`.
+9. `--stop-after-saving-novel-peptide` requires `--output_internal_novel_peptide`.
+10. If `--name` and `--output-folder` are both set, `--name` must not contain path separators.
+11. `--name` with multiple spectrum inputs is allowed only in merged multi-input novel mode (`novelMode && input_count > 1`); otherwise it remains single-input only.
+12. `--run-comet-each` is effective only when all of the following are true: novel mode, multi-input spectra, known DBs are all `.idx`, and `.idx` type is peptide index (`-j`); otherwise warning + fallback to merged-MGF single-search path.
+13. Spectrum input can be omitted in either stop-after mode or standalone `--output_known_peptide` export mode.
 
 ## 3. `--novel_peptide`: FASTA vs Tokenized Text
 
@@ -409,6 +414,7 @@ Before search starts, CometPlus computes all planned outputs from effective outp
 1. default mode: `sqt`, `txt`, `pep.xml`, `mzid`, `pin` (+ decoy-side files when `decoy_search=2`)
 2. effective `--run-comet-each` mode: `pin` only
 3. internal TSV target when `--output_internal_novel_peptide` is set
+4. known peptide cache target when `--output_known_peptide` is set
 
 Then two checks run:
 
@@ -478,6 +484,31 @@ Path behavior:
 6. Legacy TSV fallback:
    - workflow computes novel masses via temporary no-cut index generation (previous behavior).
 7. Workflow then continues to prefilter + search.
+
+## 12A. Known Peptide Cache (Export And Reuse)
+
+### 12A.1 Export: `--output_known_peptide`
+This file stores the effective known peptide universe used for subtraction.
+
+Format is plain text:
+
+1. one normalized peptide per line
+2. uppercase letters only
+3. blank lines are ignored on import
+4. no metadata columns or comments
+
+Behavior:
+
+1. if fresh novel input is used and `--known_peptide` is absent, export writes peptides extracted from known DB(s)
+2. if `--known_peptide` is present, export writes the effective canonical set used by that run
+3. if used without novel mode, CometPlus exports and exits before novel assembly, prefilter, and search
+4. path resolution matches internal novel TSV behavior: bare filename resolves under `--output-folder`
+
+### 12A.2 Reuse: `--known_peptide`
+1. input is parsed as one peptide token per line
+2. each line is normalized with the same alphabetic-uppercase peptide-token logic as other peptide text inputs
+3. subtraction still applies runtime `equal_I_and_L`, so caches preserve `I` and `L` and remain reusable across either setting
+4. this option accelerates subtraction only; known DB is still required for search-space construction and scoring
 
 ## 13. Novel-Only Spectrum Output Filtering
 
