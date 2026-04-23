@@ -72,7 +72,7 @@ peptide_mass_tolerance_upper = 20.0    # upper bound of the precursor mass toler
 peptide_mass_tolerance_lower = -20.0   # lower bound of the precursor mass tolerance; USUALLY NEGATIVE TO BE LOWER THAN 0\n\
 peptide_mass_units = 2                 # 0=amu, 1=mmu, 2=ppm\n\
 precursor_tolerance_type = 1           # 0=MH+ (default), 1=precursor m/z; only valid for amu/mmu tolerances\n\
-isotope_error = 2                      # 0=off, 1=0/1 (C13 error), 2=0/1/2, 3=0/1/2/3, 4=-1/0/1/2/3, 5=-1/0/1\n");
+isotope_error = 0                      # 0=none, 1=0/+1, 2=0/+1/+2, 3=0/+1/+2/+3, 4=-1/0/+1/+2/+3, 5=-1/0/+1, 6=-3/-2/-1/0/+1/+2/+3, 7=-8/-4/0/+4/+8\n");
 
    if (iPrintParams == 2)
    {
@@ -170,7 +170,7 @@ print_ascorepro_score = 1              # 0=no, 0 to 5 to localize variable_mod01
 #\n\
 scan_range = 0 0                       # start and end scan range to search; either entry can be set independently\n\
 precursor_charge = 0 0                 # precursor charge range to analyze; does not override any existing charge; 0 as 1st entry ignores parameter\n\
-override_charge = 0                    # 0=no, 1=override precursor charge states, 2=ignore precursor charges outside precursor_charge range, 3=see online\n\
+override_charge = 0                    # 0=keep known charge, 1=use precursor_charge range, 2=only keep known charges within precursor_charge, 3=keep known charge; unknown -> 1+ if no signal above precursor m/z else precursor_charge range\n\
 ms_level = 2                           # MS level to analyze, valid are levels 2 (default) or 3\n\
 activation_method = ALL                # activation method; used if activation method set; allowed ALL, CID, ECD, ETD, ETD+SA, PQD, HCD, IRMPD, SID\n\
 \n\

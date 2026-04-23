@@ -370,7 +370,23 @@ When any novel option or explicit scan option is used, CometPlus runs this flow:
 13. Intersect explicit scans with any scan-range constraint (`-F/-L` or `--first-scan/--last-scan`).
 14. Filter spectra into temporary MGF files (parallel workers based on `--thread` or `num_threads`):
    - by explicit scan set if provided,
-   - and, in novel mode, by precursor-mass plausibility against retained novel peptide masses.
+   - and, in novel mode, by precursor-mass plausibility against retained novel peptide masses using the current Comet precursor-charge settings.
+   Charge-state selection follows current Comet preprocessing behavior:
+   - `override_charge=0`: keep any known precursor charge state values in the input files.
+   - `override_charge=1`: ignore known precursor charge state values in the input files and instead use the charge-state range specified by `precursor_charge`.
+   - `override_charge=2`: only search precursor charge state values that are within the range specified by `precursor_charge`.
+   - `override_charge=3`: keep any known precursor charge state values. For unknown charge states, search as singly charged if there is no signal above the precursor `m/z` or use the `precursor_charge` range otherwise.
+   Isotope-offset handling follows current Comet `isotope_error` semantics:
+   - default is `0` if the parameter is missing.
+   - `0`: analyze no isotope offsets, just the given precursor mass.
+   - `1`: search `0, +1` isotope offsets.
+   - `2`: search `0, +1, +2` isotope offsets.
+   - `3`: search `0, +1, +2, +3` isotope offsets.
+   - `4`: search `-1, 0, +1, +2, +3` isotope offsets.
+   - `5`: search `-1, 0, +1` isotope offsets.
+   - `6`: search `-3, -2, -1, 0, +1, +2, +3` isotope offsets.
+   - `7`: search `-8, -4, 0, +4, +8` isotope offsets for `+4/+8` stable isotope labeling.
+   - Values `4` through `7` follow the behavior introduced in release `2024.01.0`.
 15. If novel mode has more than one spectrum input:
    - default path: merge filtered MGFs into one temporary MGF while preserving each spectrum `TITLE=`.
    - `--run-comet-each` path (peptide `.idx` known DB only): regroup filtered shards into `N` balanced merged task-MGF files (`N = max(1, total_threads / 4)`, capped by shard count).

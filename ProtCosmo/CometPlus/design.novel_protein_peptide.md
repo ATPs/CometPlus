@@ -274,7 +274,29 @@ Where:
 ### 7.3 What `passes_novel_mass_plausibility` means
 In novel mode, CometPlus first computes retained novel peptides after subtraction vs known DB, then collects their peptide masses (`vNovelMasses`).
 
-A spectrum passes novel plausibility if at least one candidate precursor charge/mass state can match at least one retained novel mass under current Comet tolerance model, including:
+A spectrum passes novel plausibility if at least one candidate precursor charge/mass state can match at least one retained novel mass under current Comet tolerance model. Novel-mode prefilter uses the same precursor-charge interpretation as normal Comet preprocessing to generate those candidate precursor mass states before matching retained novel masses.
+
+Charge-state selection follows current Comet parameters:
+
+1. `override_charge=0`: keep any known precursor charge state values in the input files.
+2. `override_charge=1`: ignore known precursor charge state values in the input files and instead use the charge-state range specified by `precursor_charge`.
+3. `override_charge=2`: only search precursor charge state values that are within the range specified by `precursor_charge`.
+4. `override_charge=3`: keep any known precursor charge state values. For unknown charge states, search as singly charged if there is no signal above the precursor `m/z` or use the `precursor_charge` range otherwise.
+
+Isotope-offset handling follows current Comet `isotope_error` semantics:
+
+1. default is `0` if the parameter is missing.
+2. `0`: analyze no isotope offsets, just the given precursor mass.
+3. `1`: search `0, +1` isotope offsets.
+4. `2`: search `0, +1, +2` isotope offsets.
+5. `3`: search `0, +1, +2, +3` isotope offsets.
+6. `4`: search `-1, 0, +1, +2, +3` isotope offsets.
+7. `5`: search `-1, 0, +1` isotope offsets.
+8. `6`: search `-3, -2, -1, 0, +1, +2, +3` isotope offsets.
+9. `7`: search `-8, -4, 0, +4, +8` isotope offsets for `+4/+8` stable isotope labeling.
+10. values `4` through `7` follow the behavior introduced in release `2024.01.0`.
+
+Novel mass plausibility then evaluates those candidate precursor mass states using the current Comet tolerance model, including:
 
 1. `digest_mass_range`
 2. `peptide_mass_tolerance_lower/upper`
@@ -289,7 +311,7 @@ A spectrum passes novel plausibility if at least one candidate precursor charge/
 And spectrum reading uses `ms_level` filter (`MS2` default, or MS1/MS3 if configured).
 
 ### 7.4 Consequences
-1. Novel-aware reduction is precursor-mass plausibility filtering, not fragment-level confirmation.
+1. Novel-aware reduction is precursor-mass plausibility filtering using the current Comet precursor-charge rules, not fragment-level confirmation.
 2. Some non-novel spectra may remain if precursor mass overlaps novel mass windows.
 3. If no novel peptides remain after subtraction, novel mass set is empty and all spectra fail novel plausibility (effectively zero kept scans), with warning logged.
 
@@ -304,12 +326,12 @@ Example B: only novel options
 
 1. Command includes `--novel_peptide novel.txt`
 2. No explicit scan set.
-3. Kept scans are those passing range + novel mass plausibility.
+3. Kept scans are those passing range + novel mass plausibility under the current precursor-charge settings.
 
 Example C: both explicit and novel
 
 1. Command includes `--novel_protein novel.fasta --scan scan_ids.txt`
-2. Kept scans must satisfy explicit-set membership and novel mass plausibility simultaneously.
+2. Kept scans must satisfy explicit-set membership and novel mass plausibility under the current precursor-charge settings simultaneously.
 
 ## 8. Known/Novel Subtraction Semantics
 
