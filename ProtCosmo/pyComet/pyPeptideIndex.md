@@ -10,10 +10,11 @@ This document explains how `pyPeptideIndex.py` works and describes every output 
 3. Determine input proteins from `--database` FASTA files, `--protein` inline sequences, or `database_name` in the params file.
 4. Normalize sequences to uppercase and keep only letters and `*`. `*` is treated as a stop and splits the protein into segments for digestion.
 5. Digest each segment using the search enzyme (and optional second enzyme) with `num_enzyme_termini`, `allowed_missed_cleavage`, and `peptide_length_range`. If `clip_nterm_methionine=1`, also generate peptides starting at position 2 when the protein starts with `M`.
-6. Record unique peptide sequences across all proteins. The "primary" protein for a peptide is the earliest occurrence (smallest FASTA file offset).
-7. Compute base peptide mass (MH+) using `mass_type_parent` (mono or average), `set_` masses, static `add_` mods, and terminal static mods.
-8. Enumerate variable mods using `variable_modNN` rules, `max_variable_mods_in_peptide`, and `require_variable_mod`. Each variant is filtered by `digest_mass_range`. This step supports multiprocessing with `--thread`.
-9. Write TSV tables. Sorting is stable and reproducible (variants are sorted by mass, `pep_seq`, and mod sites).
+6. Record unique peptide sequences across all proteins. The "primary" protein for a peptide is the earliest occurrence (smallest FASTA file offset) and remains the representative for `peptide_sequence.tsv` only.
+7. Group occurrences of each sequence by variant eligibility. A group retains one deterministic real occurrence and includes protein-terminal fixed-mod eligibility plus the candidate positions of every active variable mod whose eligibility can vary by protein position. Context-invariant candidates are the same for a fixed sequence and are not redundantly stored.
+8. Enumerate variable mods independently for every retained occurrence context, then union equivalent variants. Candidate sites from different contexts are never combined; for example, protein N- and C-terminal mods supported by different proteins cannot create a synthetic N+C variant. Each variant is filtered by `digest_mass_range`. This step supports multiprocessing with `--thread`.
+9. Deduplicate the union before assigning IDs using the lossless internal identity `(peptide_id, Comet variable-mod site array, fixed_mod_sites)`. UniMod text is serialized for output but is not the deduplication identity, so disabled or incomplete UniMod mapping cannot collapse distinct variants. Duplicate internal identities must agree on mass and counts.
+10. Write TSV tables. Sorting is stable and reproducible (variants are sorted by mass, `pep_seq`, and mod sites).
 
 **Command Line Options**
 1. `--params` / `-P`: Path to `comet.params`. Used for enzyme rules, digestion filters, and mods.
@@ -129,15 +130,14 @@ One row per peptide occurrence in a protein sequence.
 **`<prefix>.peptide_variant.tsv`**
 Each peptide sequence expanded into variable-modified variants.
 1. `run_id`
-2. `variant_id`: 1-based ID assigned during enumeration.
+2. `variant_id`: 1-based ID assigned after occurrence-context variants are deduplicated. A corrected index can therefore assign different IDs from an older incomplete index.
 3. `peptide_id`
 4. `pep_seq`: Peptide sequence string.
 5. `mh_plus`: Calculated MH+ mass (includes static and variable mods).
-6. `prev_aa`: Residue before the peptide in the primary protein, or `-` if N-terminus or after `*`.
-7. `next_aa`: Residue after the peptide in the primary protein, or `-` if C-terminus or before `*`.
+6. `prev_aa`: Residue before the peptide in the deterministic real occurrence that first generated this final variant, or `-` if N-terminus or after `*`.
+7. `next_aa`: Residue after the peptide in that same occurrence, or `-` if C-terminus or before `*`.
    - If a peptide occurs in multiple contexts with different flanks, only one flank pair is stored.
-   - The stored flanks come from the "primary" occurrence with the smallest FASTA file offset (earliest protein).
-   - This matches Comet’s peptide index tie-breaker, which keeps flanks from the lowest protein index when duplicates exist.
+   - The stored flanks always belong to an occurrence that can actually generate the variant; they are never copied from an unrelated primary occurrence.
 8. `var_mod_sites`: `pos:mod_index` pairs separated by `;`. `pos` is 0-based residue index. `pos=len(seq)` is peptide N-term, `pos=len(seq)+1` is peptide C-term.
 9. `var_mod_sites_unimod`: `pos:unimod_id` pairs separated by `;`, aligned with `var_mod_sites`.
 10. `var_mod_count`: Total number of variable mods in this variant.
@@ -165,3 +165,4 @@ One row per modified site in each variant.
 8. Example matches with the default UniMod CSV:
    - `variable_mod01 = 15.994915 M ...` maps to `35` (Oxidation).
    - `add_C_cysteine = 57.021464` maps to `4` (Carbamidomethyl).
+9. Existing PostgreSQL peptide-variant tables retain an incomplete variant set until indexes built with this behavior are regenerated and loaded. The normal loader upserts only missing variant keys; it does not require a table rebuild for this correction.

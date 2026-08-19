@@ -22,8 +22,10 @@ from .peptide_index_variants import (
     VariantTaskRow,
     apply_set_masses,
     build_aa_masses,
+    build_variant_context_signature,
     enumerate_sequence_variants,
     enumerate_variant_chunk,
+    get_occurrence_context_mods,
     get_static_mods,
     init_variant_worker,
     resolve_thread_count,
@@ -49,6 +51,7 @@ def build_tables(
     aa_masses, h2o_mass = build_aa_masses(bool(params.parsed.get("mass_type_parent", 1)))
     apply_set_masses(aa_masses, params)
     var_mods = sorted(params.variable_mods, key=lambda mod: mod.index)
+    context_mods = get_occurrence_context_mods(var_mods)
     stderr_isatty = getattr(sys.stderr, "isatty", lambda: False)()
     use_tqdm = bool(progress and tqdm is not None and stderr_isatty)
 
@@ -70,6 +73,30 @@ def build_tables(
         if progress and not use_tqdm:
             print(message, file=sys.stderr, flush=True)
 
+    def occurrence_order_key(occurrence: Tuple) -> Tuple:
+        """Return a stable representative order for one real peptide occurrence."""
+        (
+            offset,
+            protein_id,
+            start,
+            end,
+            prev_aa,
+            next_aa,
+            protein_len,
+            nterm_offset,
+        ) = occurrence
+        protein_key = (0, protein_id) if isinstance(protein_id, int) else (1, str(protein_id))
+        return (
+            offset,
+            protein_key,
+            start,
+            end,
+            prev_aa,
+            next_aa,
+            protein_len,
+            nterm_offset,
+        )
+
     def record_peptide(
         pep_seq: str,
         abs_start: int,
@@ -85,37 +112,44 @@ def build_tables(
     ) -> None:
         nonlocal peptide_records
         peptide_records += 1
+        occurrence = (
+            offset,
+            protein_id,
+            abs_start,
+            abs_end,
+            prev_aa,
+            next_aa,
+            protein_len,
+            nterm_offset,
+        )
+        context_signature = build_variant_context_signature(
+            pep_seq,
+            context_mods,
+            abs_start,
+            protein_len,
+            nterm_offset,
+            term_mods,
+        )
         entry = seq_info.get(pep_seq)
         if entry is None:
             entry = {
                 "protein_ids": set(),
-                "primary": (
-                    offset,
-                    protein_id,
-                    abs_start,
-                    abs_end,
-                    prev_aa,
-                    next_aa,
-                    protein_len,
-                    nterm_offset,
-                ),
+                "primary": occurrence,
                 "locations": set(),
+                "variant_contexts": {context_signature: occurrence},
             }
             seq_info[pep_seq] = entry
         entry["protein_ids"].add(protein_id)
         entry["locations"].add((protein_id, pr_start, pr_end))
+        existing_context = entry["variant_contexts"].get(context_signature)
+        if (
+            existing_context is None
+            or occurrence_order_key(occurrence) < occurrence_order_key(existing_context)
+        ):
+            entry["variant_contexts"][context_signature] = occurrence
         primary = entry["primary"]
-        if offset < primary[0]:
-            entry["primary"] = (
-                offset,
-                protein_id,
-                abs_start,
-                abs_end,
-                prev_aa,
-                next_aa,
-                protein_len,
-                nterm_offset,
-            )
+        if occurrence_order_key(occurrence) < occurrence_order_key(primary):
+            entry["primary"] = occurrence
 
     protein_count = 0
     max_proteins_label = f" (max {max_proteins})" if max_proteins else ""
@@ -357,47 +391,51 @@ def build_tables(
     sequence_tasks: List[SequenceTask] = []
     for seq in sequences:
         entry = seq_info[seq]
-        (
-            _offset,
-            _primary_protein_id,
-            start,
-            end,
-            prev_aa,
-            next_aa,
-            protein_len,
-            nterm_offset,
-        ) = entry["primary"]
         seq_id = seq_id_map[seq]
-        sequence_tasks.append(
+        for context_signature in sorted(entry["variant_contexts"]):
             (
-                seq_id,
-                seq,
+                _offset,
+                _protein_id,
                 start,
                 end,
                 prev_aa,
                 next_aa,
                 protein_len,
                 nterm_offset,
+            ) = entry["variant_contexts"][context_signature]
+            sequence_tasks.append(
+                (
+                    seq_id,
+                    seq,
+                    start,
+                    end,
+                    prev_aa,
+                    next_aa,
+                    protein_len,
+                    nterm_offset,
+                )
             )
-        )
 
     peptide_variant_rows: List[Tuple] = []
     peptide_variant_mod_rows: List[Tuple] = []
     variant_id = 0
 
-    total_sequences = len(sequence_tasks)
+    total_contexts = len(sequence_tasks)
     variant_bar = None
-    if total_sequences:
+    if total_contexts:
         if use_tqdm:
             variant_bar = tqdm(
-                total=total_sequences,
+                total=total_contexts,
                 desc="Index: enumerate variants",
-                unit="sequence",
+                unit="context",
                 file=sys.stderr,
                 leave=False,
             )
         else:
-            progress_log(f"Index: starting variant enumeration for {total_sequences} sequences")
+            progress_log(
+                f"Index: starting variant enumeration for {total_contexts} contexts "
+                f"across {len(sequences)} sequences"
+            )
     variant_context = VariantContext(
         aa_masses=aa_masses,
         h2o_mass=h2o_mass,
@@ -413,15 +451,15 @@ def build_tables(
     )
 
     variant_task_rows: List[VariantTaskRow] = []
-    if thread_count > 1 and total_sequences > 1:
-        chunk_size = max(1, min(500, total_sequences // (thread_count * 8) or 1))
+    if thread_count > 1 and total_contexts > 1:
+        chunk_size = max(1, min(500, total_contexts // (thread_count * 8) or 1))
         futures = []
         with ProcessPoolExecutor(
             max_workers=thread_count,
             initializer=init_variant_worker,
             initargs=(variant_context,),
         ) as executor:
-            for chunk_start in range(0, total_sequences, chunk_size):
+            for chunk_start in range(0, total_contexts, chunk_size):
                 chunk = sequence_tasks[chunk_start : chunk_start + chunk_size]
                 futures.append((len(chunk), executor.submit(enumerate_variant_chunk, chunk)))
 
@@ -438,10 +476,39 @@ def build_tables(
 
     if variant_bar is not None:
         variant_bar.close()
-    if total_sequences:
+    if total_contexts:
         progress_log(
-            f"Index: finished variant enumeration for {total_sequences} sequences; "
-            f"variants {len(variant_task_rows)}"
+            f"Index: finished variant enumeration for {total_contexts} contexts; "
+            f"raw variants {len(variant_task_rows)}"
+        )
+
+    raw_variant_count = len(variant_task_rows)
+    deduplicated_task_rows: List[VariantTaskRow] = []
+    current_seq_id = None
+    seen_variants: Dict[Tuple, VariantTaskRow] = {}
+    for row in variant_task_rows:
+        seq_id = row[0]
+        if seq_id != current_seq_id:
+            current_seq_id = seq_id
+            seen_variants = {}
+        internal_key = (seq_id, tuple(row[11]), row[7])
+        existing = seen_variants.get(internal_key)
+        if existing is None:
+            seen_variants[internal_key] = row
+            deduplicated_task_rows.append(row)
+            continue
+        comparable_fields = (1, 4, 5, 6, 7, 8, 9, 10, 11)
+        if any(existing[index] != row[index] for index in comparable_fields):
+            raise RuntimeError(
+                "Conflicting variant rows for the same internal modification identity "
+                f"(peptide_id={seq_id}, sites={row[4]!r}, fixed_sites={row[7]!r})."
+            )
+
+    variant_task_rows = deduplicated_task_rows
+    if total_contexts:
+        progress_log(
+            f"Index: deduplicated variants {len(variant_task_rows)} from "
+            f"{raw_variant_count} raw rows"
         )
 
     for (

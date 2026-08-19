@@ -154,6 +154,7 @@ ipch/
 
 # Local History for Visual Studio
 .localhistory/
+.local/
 
 # Windows Installer files from build outputs
 *.cab

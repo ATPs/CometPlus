@@ -13,6 +13,7 @@ HYDROGEN_MONO = 1.00782503223
 OXYGEN_MONO = 15.99491461957
 
 SequenceTask = Tuple[int, str, int, int, str, str, int, int]
+VariantContextSignature = Tuple[bool, bool, Tuple[Tuple[int, Tuple[int, ...]], ...]]
 VariantTaskRow = Tuple[
     int,
     float,
@@ -152,19 +153,20 @@ def build_var_mod_candidates(
         positions: List[int] = []
         residues = mod.residues
         residue_chars = residues.replace("n", "").replace("c", "")
-        for i, residue in enumerate(seq):
-            if residue not in residue_chars:
-                continue
-            if mod.term_distance >= 0:
-                if mod.which_term == 0 and (protein_start + i - nterm_offset) > mod.term_distance:
+        if residue_chars:
+            for i, residue in enumerate(seq):
+                if residue not in residue_chars:
                     continue
-                if mod.which_term == 1 and (protein_length - 1 - (protein_start + i)) > mod.term_distance:
-                    continue
-                if mod.which_term == 2 and i > mod.term_distance:
-                    continue
-                if mod.which_term == 3 and (pep_len - 1 - i) > mod.term_distance:
-                    continue
-            positions.append(i)
+                if mod.term_distance >= 0:
+                    if mod.which_term == 0 and (protein_start + i - nterm_offset) > mod.term_distance:
+                        continue
+                    if mod.which_term == 1 and (protein_length - 1 - (protein_start + i)) > mod.term_distance:
+                        continue
+                    if mod.which_term == 2 and i > mod.term_distance:
+                        continue
+                    if mod.which_term == 3 and (pep_len - 1 - i) > mod.term_distance:
+                        continue
+                positions.append(i)
 
         if "n" in residues:
             ok = True
@@ -195,6 +197,67 @@ def build_var_mod_candidates(
         candidates.append(sorted(set(positions)))
 
     return candidates
+
+
+def get_occurrence_context_mods(var_mods: Sequence[VarMod]) -> List[VarMod]:
+    """Return active variable mods whose candidates can vary by protein occurrence.
+
+    A signature is only compared among occurrences of one fixed peptide sequence.
+    Peptide-terminal and unrestricted residue candidates are therefore invariant and
+    omitted. Protein-terminal candidates and protein-distance-limited residue
+    candidates must remain in the signature to prevent invalid cross-context unions.
+    """
+    context_mods: List[VarMod] = []
+    for mod in var_mods:
+        if mod.mass == 0.0 or mod.residues == "-":
+            continue
+        if mod.which_term not in (0, 1):
+            continue
+        residue_chars = mod.residues.replace("n", "").replace("c", "")
+        has_terminal_candidate = "n" in mod.residues or "c" in mod.residues
+        has_distance_limited_residue = bool(residue_chars) and mod.term_distance >= 0
+        if has_terminal_candidate or has_distance_limited_residue:
+            context_mods.append(mod)
+    return context_mods
+
+
+def build_variant_context_signature(
+    seq: str,
+    context_mods: Sequence[VarMod],
+    protein_start: int,
+    protein_length: int,
+    nterm_offset: int,
+    term_mods: Dict[str, float],
+) -> VariantContextSignature:
+    """Build the lossless variant-eligibility signature for one peptide occurrence.
+
+    The fixed-terminal flags capture protein-terminal static mass/site changes.
+    Candidate tuples cover every active variable mod that can differ for another
+    occurrence of this same sequence. All omitted variable candidates are sequence
+    invariant, so this signature is exact while avoiding repeated full scans of
+    unrestricted mods for every peptide location.
+    """
+    protein_end = protein_start + len(seq) - 1
+    fixed_nterm = (
+        abs(term_mods.get("Nterm_protein", 0.0)) > 1e-12
+        and protein_start == nterm_offset
+    )
+    fixed_cterm = (
+        abs(term_mods.get("Cterm_protein", 0.0)) > 1e-12
+        and protein_end == protein_length - 1
+    )
+    candidates = build_var_mod_candidates(
+        seq,
+        list(context_mods),
+        protein_start,
+        protein_length,
+        nterm_offset,
+    )
+    candidate_signature = tuple(
+        (mod.index, tuple(positions))
+        for mod, positions in zip(context_mods, candidates)
+    )
+    return fixed_nterm, fixed_cterm, candidate_signature
 
 
 def enumerate_var_mods(
@@ -452,12 +515,15 @@ __all__ = [
     "HYDROGEN_MONO",
     "OXYGEN_MONO",
     "SequenceTask",
+    "VariantContextSignature",
     "VariantTaskRow",
     "VariantContext",
     "build_aa_masses",
     "apply_set_masses",
     "get_static_mods",
     "build_var_mod_candidates",
+    "get_occurrence_context_mods",
+    "build_variant_context_signature",
     "enumerate_var_mods",
     "format_var_mod_sites",
     "format_var_mod_sites_unimod",
